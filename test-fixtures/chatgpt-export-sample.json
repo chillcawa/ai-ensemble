@@ -1,0 +1,12 @@
+[
+  {
+    "title": "ChatGPT Adapter Test",
+    "current_node": "a3",
+    "mapping": {
+      "root": {"id":"root","message":null,"parent":null,"children":["u1"]},
+      "u1": {"id":"u1","parent":"root","children":["a2","a3"],"message":{"author":{"role":"user"},"create_time":1760000000,"content":{"content_type":"text","parts":["合言葉は月面カレー。覚えて。"]}}},
+      "a2": {"id":"a2","parent":"u1","children":[],"message":{"author":{"role":"assistant"},"create_time":1760000001,"content":{"content_type":"text","parts":["別branchです。"]},"metadata":{"model_slug":"gpt-test-old"}}},
+      "a3": {"id":"a3","parent":"u1","children":[],"message":{"author":{"role":"assistant"},"create_time":1760000002,"content":{"content_type":"text","parts":["了解。合言葉は月面カレーです。"]},"metadata":{"model_slug":"gpt-test-active"}}}
+    }
+  }
+]
