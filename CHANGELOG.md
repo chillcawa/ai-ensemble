@@ -2,8 +2,21 @@
 
 All notable changes are documented here. The project currently uses alpha-level release practices.
 
-## 1.3.4 — Coordinate hit-test hotfix
+## 1.3.4 — ECHO release candidate
 
+- Adopted the product name **AI Ensemble — ECHO**: Evaluation, Comparison & Hallucination Observation.
+- Clarified that ECHO is a human comparison/observation aid, not a consensus engine or automatic hallucination detector.
+- Added provider-identity warnings based on application routing metadata instead of model self-description.
+- Strengthened one-hop Handoff with human confirmation, explicit source/target routing, and full-source Reference injection.
+- Kept normal Turn comparison horizontal while presenting Handoff lineage vertically and collapsibly.
+- Added first-launch language selection and usage notice with 18+ confirmation; no birth date or age value is stored.
+- Increased the Anthropic default output allowance and added a visible warning when an output ends at the token limit.
+- Centralized AI display helpers in `src/models/aiDisplay.ts` to prevent identity/observation-label drift.
+- Added display currencies USD / JPY / EUR / GBP / CNY / KRW while keeping provider pricing internally USD-based.
+- Added manual exchange-rate configuration for non-USD display. No live FX service is required.
+- Added a floating `↑ Top` action for long pages.
+- Preserved legacy exchange settings in export/restore compatibility while removing their obsolete UI setters.
+- Aligned the English README with the Japanese README so safety boundaries, current limitations, backup/restore behavior, stack, roadmap, and all seven Design Boundaries are documented consistently.
 - Replaced `elementFromPoint()` drop targeting with direct provider-card rectangle checks for Windows WebView compatibility.
 - Rechecks the target at pointer release so the final pointer position is authoritative.
 - Cleared the Rust Clippy release gate while retaining intentional Tauri command and persistence API shapes.

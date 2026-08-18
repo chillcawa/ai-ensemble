@@ -9,7 +9,7 @@ Last reviewed: **2026-08-16 (UTC)**.
 - DeepSeek: <https://api-docs.deepseek.com/quick_start/pricing/>
 - Kimi K3: <https://platform.kimi.ai/docs/pricing/chat-k3>
 
-The JPY display uses a configurable estimate whose default is 150 JPY/USD. It is not a live exchange rate. Taxes, cached-token rules, long-context multipliers, service tiers, regional processing, tools, and provider-specific adjustments may make the billed amount differ.
+Provider prices are stored internally in USD. The UI can display USD, JPY, EUR, GBP, CNY, or KRW. Non-USD conversion uses a user-supplied manual exchange rate; ECHO does not fetch live FX rates. Taxes, cached-token rules, long-context multipliers, service tiers, regional processing, tools, provider-specific adjustments, and exchange-rate movement may make the billed amount differ.
 
 When changing a price:
 

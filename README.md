@@ -45,6 +45,18 @@ APIキーはRust側からOSのCredential Store（Windows Credential Manager / ma
 簡体字中国語と韓国語で未翻訳の低頻度文言は英語へフォールバックします。今後の追加候補は、
 繁体字中国語、スペイン語、ブラジルポルトガル語です。ヒンディー語は余裕ができた段階で検討します。
 
+
+## 初回起動と利用上の注意
+
+初回起動時に表示言語を選び、利用上の注意を確認します。開始には「18歳以上」と
+「上記を確認しました」の2項目への確認が必要です。生年月日や年齢そのものは入力・保存しません。
+
+AIは、自身のモデル名・開発元・参照元を誤認して説明することがあります。
+ECHOでは回答本文中の自己申告より、アプリが保持しているProvider / Model情報を優先して表示し、
+AI回答の前に生成元ラベルを表示します。
+
+AI間のHandoffは、人間の確認を挟む1ホップのみです。連鎖的なAI→AI転送は行いません。
+
 ## 主な機能
 
 ### 質問と回答比較
@@ -57,6 +69,7 @@ APIキーはRust側からOSのCredential Store（Windows Credential Manager / ma
 - 上下で同期する回答ナビゲーション
 - 通常ウィンドウでも利用可能な横幅全体を使うFluid layout
 - ネイティブ全画面表示と通常表示の切り替え
+- 長い画面を1クリックで最上部へ戻れる「↑ Top」ボタン
 
 ### Conversation / Observation
 
@@ -86,6 +99,11 @@ Context上限を超える場合も、アプリが内容を自動削除・自動�
 
 Persistent Context、Context Sets、Context Library、ProjectsはSQLiteをsource of truthとします。
 
+
+Archiveへ保存しただけではAI送信のContextになりません。外部会話や資料をAIへ渡す場合は、
+ArchiveからContext Libraryへ追加し、ReferenceとしてContext Setへ組み込み、そのSetを対象Conversationで
+有効化します。保管と送信対象を分離することで、Archiveした内容が意図せず外部AIへ送信されるのを防ぎます。
+
 ### Archive / Import
 
 - Generic JSON / Markdown / Text
@@ -101,6 +119,8 @@ Persistent Context、Context Sets、Context Library、ProjectsはSQLiteをsource
 - DeepSeekのcache-aware・適用日付き料金推定
 - 各AI事業者の公式Usage／Billing画面へのリンク
 - ローカル推定額と公式請求額の明確な分離
+- 表示通貨をUSD / JPY / EUR / GBP / CNY / KRWから選択可能
+- Provider価格は内部的にUSDで保持し、USD以外は利用者が設定した手動為替レートで表示換算
 
 Gemini、Qwen、Mistral、Cohere、Grokなど、契約・無料枠・モデル条件をAPI応答だけで
 確定できないProviderについては、請求額のような断定表示を行いません。最終的な使用量、
@@ -149,6 +169,7 @@ Credential StoreのAPIキーは書き出し・復元の対象外です。別PC�
 - GrokはAPIキーを設定できますが、通常はプリペイド残高または請求権限が必要です。
 - CohereのEvaluation Keyは評価・試用向けです。本番業務では契約条件を確認してください。
 - 自動アップデート機能はありません。新しい版は手動でインストールしてください。
+- 為替レートの自動取得は行いません。USD以外の換算レートは利用者が手動で設定してください。
 - アンインストール後もCredential StoreのAPIキーや端末内データが残る場合があります。
 - 復元は現在データを全置換します。実行前に現在のデータも書き出してください。
 
