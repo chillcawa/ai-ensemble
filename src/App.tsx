@@ -1,14 +1,24 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   TauriProvider,
+  cancelActiveStream,
 } from "./providers/tauriProvider";
-import { broadcastQuestion, type BroadcastResult } from "./orchestrator/orchestrator";
-import type { CostEstimate, DisplayCurrency, ExchangeMode, ProviderSlot, ThemeMode, UsageSummary } from "./types/app";
+import { CustomOpenAICompatibleProvider, makeCustomAIModel } from "./providers/customOpenAIProvider";
+import type { CustomProviderConfig } from "./types/customProvider";
+import { broadcastQuestion, type BroadcastResult, type BroadcastTarget } from "./orchestrator/orchestrator";
+import type { AIResponseSlot, CostEstimate, DisplayCurrency, ExchangeMode, ProviderSlot, ThemeMode, UsageSummary } from "./types/app";
 import { INITIAL_SLOTS, catalogForSlot } from "./models/slots";
 import { recommendModelsForSlots } from "./models/recommendation";
 import { readStorage, writeStorage } from "./storage/localSettings";
+import { DeltaErrorBoundary } from "./delta/ui/DeltaErrorBoundary";
+const DeltaConversationInspector = lazy(() =>
+  import("./delta/ui/DeltaConversationInspector").then((m) => ({ default: m.DeltaConversationInspector }))
+);
+const DeltaWorkbenchGate = lazy(() =>
+  import("./delta/ui/DeltaWorkbenchGate").then((m) => ({ default: m.DeltaWorkbenchGate }))
+);
 import { formatCostCurrency, formatTokens } from "./format";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ProviderGrid } from "./components/ProviderGrid";
@@ -35,13 +45,14 @@ import { estimateContextBudget, estimateContextTokens } from "./context/budget";
 import { loadPersistentContext } from "./context/storage";
 import { hasContextStateKey, loadContextItemsSqlite, loadContextMigrationCompleted, loadContextSetSelectionsSqlite, loadContextSetsSqlite, saveContextItemsSqlite, saveContextMigrationCompleted, saveContextSetSelectionsSqlite, saveContextSetsSqlite } from "./context/sqliteStorage";
 import { contextItemsForConversation, isolateSharedSetInstructions, loadContextSets, loadContextSetSelections, type ContextSet } from "./context/sets";
-import { appendConversationMessage, createConversation, deleteConversation, listConversations, loadConversationMessages, moveConversation, renameConversation } from "./conversation/storage";
+import { appendConversationMessage, createConversation, deleteConversation, listConversations, listInterruptedStreamRuns, loadConversationMessages, markStreamRunRecovered, moveConversation, renameConversation } from "./conversation/storage";
 import type { ConversationMessage, ConversationSummary } from "./conversation/types";
 import { listProjects, createProject, renameProject, deleteProject } from "./project/storage";
 import type { Project } from "./project/types";
 import { historyForSlot } from "./conversation/types";
 import { snapshotAppliedAiReferences } from "./conversation/observation";
 import { useProviderSettings } from "./hooks/useProviderSettings";
+import { useCustomProviders } from "./hooks/useCustomProviders";
 import { APP_VERSION, TRIAL_NOTICE_STORAGE_KEY } from "./version";
 import { applyImportedFrontendSettings, type UserDataExportFile } from "./data/userDataTransfer";
 import { useI18n } from "./i18n";
@@ -60,6 +71,14 @@ function uid(prefix: string): string {
 export default function App() {
   const { locale, t } = useI18n();
   const { slots, modelCatalogs, modelLoading, modelErrors, refreshModels, updateSlot, moveProviderSlot, reorderProviderSlot, saveKey: handleSaveKey, deleteKey: handleDeleteKey } = useProviderSettings();
+  const {
+    customProviders,
+    addCustomProvider,
+    removeCustomProvider,
+    updateCustomProvider,
+    saveCustomProviderKey,
+    deleteCustomProviderKey,
+  } = useCustomProviders();
   const [question, setQuestion] = useState("");
   const [results, setResults] = useState<Record<string, BroadcastResult>>({});
   const [busy, setBusy] = useState(false);
@@ -68,8 +87,9 @@ export default function App() {
   const [theme, setTheme] = useState<ThemeMode>(() => readStorage("ai-ensemble-theme", "system"));
   const [timeZoneMode, setTimeZoneMode] = useState<TimeZoneMode>(() => readStorage("ai-ensemble-timezone-mode", "system"));
   const [manualTimeZone, setManualTimeZone] = useState<string>(() => readStorage("ai-ensemble-timezone-manual", "Asia/Tokyo"));
-  const [turnOrder, setTurnOrder] = useState<TurnOrder>(() => readStorage("ai-ensemble-turn-order", "oldest_first"));
+  const [turnOrder, setTurnOrder] = useState<TurnOrder>(() => readStorage("ai-ensemble-turn-order", "newest_first"));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [deltaEnabled, setDeltaEnabled] = useState<boolean>(() => readStorage("ai-ensemble-delta-enabled", false));
   const [contextOpen, setContextOpen] = useState(false);
   const [exchangeMode] = useState<ExchangeMode>(() => readStorage("ai-ensemble-exchange-mode", "fixed"));
   const [manualRate] = useState<number>(() => readStorage("ai-ensemble-manual-rate", DEFAULT_EXCHANGE_RATE));
@@ -84,7 +104,7 @@ export default function App() {
   });
   const [contextItems, setContextItems] = useState<ContextItem[]>([]);
   const [lastSendMeta, setLastSendMeta] = useState<Record<string, { question: string; contextIds: string[]; instructions: string[]; aiReferenceSources: ReturnType<typeof snapshotAppliedAiReferences> }>>({});
-  const [handoffSource, setHandoffSource] = useState<{ slot: ProviderSlot; result: BroadcastResult; meta: HandoffSourceMeta } | null>(null);
+  const [handoffSource, setHandoffSource] = useState<{ slot: AIResponseSlot; result: BroadcastResult; meta: HandoffSourceMeta } | null>(null);
   const [recommendationsEnabled, setRecommendationsEnabled] = useState<boolean>(() => readStorage("ai-ensemble-model-recommendations-enabled", true));
   const [handoffRuns, setHandoffRuns] = useState<HandoffRun[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -191,6 +211,37 @@ export default function App() {
   const displayRate = displayCurrency === "USD" ? 1 : (currencyRates[displayCurrency] ?? 0);
   const recommendations = useMemo(() => recommendModelsForSlots(question, slots, modelCatalogs), [question, slots, modelCatalogs]);
   const activeSlots = useMemo(() => slots.filter((s) => s.enabled && s.keySaved), [slots]);
+  // [Phase CP-1 MVP] Custom Providerはkey未設定でも有効にできる(多くのローカル
+  // サーバーは認証不要のため)。enabledのみを条件にする。
+  const activeCustomProviders = useMemo(() => customProviders.filter((c) => c.enabled && c.baseUrl.trim() && c.model.trim()), [customProviders]);
+  const activeTargetIds = useMemo(() => [
+    ...activeSlots.map((slot) => slot.id),
+    ...activeCustomProviders.map((config) => config.id),
+  ], [activeSlots, activeCustomProviders]);
+  const activeTargetCount = activeTargetIds.length;
+  const responseSlots = useMemo<AIResponseSlot[]>(() => [
+    ...slots.map((slot) => ({
+      id: slot.id,
+      provider: slot.key,
+      providerKey: slot.key,
+      label: slot.label,
+      enabled: slot.enabled,
+      model: slot.model,
+      keySaved: slot.keySaved,
+      kind: "built_in" as const,
+    })),
+    ...activeCustomProviders.map((config) => ({
+      id: config.id,
+      provider: config.id,
+      label: config.name,
+      enabled: config.enabled,
+      model: makeCustomAIModel(config.id, config.model),
+      keySaved: true,
+      kind: "custom" as const,
+      baseUrl: config.baseUrl,
+    })),
+  ], [slots, activeCustomProviders]);
+  const totalTargetCount = slots.length + customProviders.length;
   const draftConversationId = `${DRAFT_CONVERSATION_ID}:${currentProjectId}`;
   const conversationKey = currentConversationId ?? draftConversationId;
   const currentProject = useMemo(() => projects.find((project) => project.id === currentProjectId) ?? null, [projects, currentProjectId]);
@@ -295,7 +346,7 @@ export default function App() {
     setContextItems(repaired.items);
     setContextSets(repaired.sets);
   }, [contextStorageReady]);
-  useEffect(() => setColumnWidths((prev) => slots.map((_, i) => prev[i] ?? 420)), [slots.length]);
+  useEffect(() => setColumnWidths((prev) => responseSlots.map((_, i) => prev[i] ?? 420)), [responseSlots.length]);
 
   const refreshUsage = useCallback(async () => {
     try {
@@ -561,6 +612,88 @@ export default function App() {
 
   useEffect(() => { void refreshUsage(); }, [refreshUsage]);
 
+  // [Phase 1継続] アプリ起動時に、前回セッションでstatus='streaming'のまま
+  // 残っていたstream_runs(=アプリがクラッシュ/強制終了して、完了/失敗を
+  // 記録する前に終了したストリーミング)を検出し、途中まで届いていた
+  // 応答を会話へ復元する。会話に紐づかないrun(コスト見積り等)は無視する。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let interrupted: Awaited<ReturnType<typeof listInterruptedStreamRuns>>;
+      try {
+        interrupted = await listInterruptedStreamRuns();
+      } catch (err) {
+        console.error("failed to list interrupted stream runs", err);
+        return;
+      }
+      if (cancelled || interrupted.length === 0) return;
+
+      for (const run of interrupted) {
+        if (!run.conversation_id) {
+          // 会話に紐づかないrun(コスト見積り等の一時的な送信)は復元対象外。
+          // recoveredとしてマークだけ行い、以降のstartup recoveryで
+          // 何度も再検出されないようにする。
+          try {
+            await markStreamRunRecovered(run.request_id);
+          } catch (err) {
+            console.error(`failed to mark orphan stream run ${run.request_id} as recovered`, err);
+          }
+          continue;
+        }
+        const slot = slots.find((candidate) => candidate.id === run.slot_id);
+        const nickname = slot?.label ?? run.provider;
+        const content = run.reconstructed_content.length > 0
+          ? `[前回セッション中断のため復元された途中経過]\n\n${run.reconstructed_content}`
+          : "[前回セッション中断。応答は届いていませんでした]";
+        // [査読反映] request_id由来の決定的IDにする。appendは成功したが直後の
+        // markStreamRunRecoveredが失敗した場合、次回起動時に同じrunが再検出されても
+        // PRIMARY KEY衝突で重複挿入されない(下のcatchでUNIQUE制約違反を検出し、
+        // 既に復元済みとみなしてmarkだけ再試行する)。
+        const recoveredMessageId = `message-ai-recovered-${run.request_id}`;
+        try {
+          await appendConversationMessage({
+            id: recoveredMessageId,
+            conversationId: run.conversation_id,
+            role: "assistant",
+            kind: "normal",
+            slotId: run.slot_id ?? undefined,
+            provider: run.provider,
+            model: run.model,
+            nickname,
+            content,
+          });
+          await markStreamRunRecovered(run.request_id);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (message.includes("UNIQUE") || message.includes("PRIMARY KEY")) {
+            // 既にこのrequest_idで復元済み(前回appendは成功、mark未完了だった)。
+            // 再度appendはしない。markだけ再試行する。
+            try {
+              await markStreamRunRecovered(run.request_id);
+            } catch (markErr) {
+              console.error(`failed to mark already-recovered stream run ${run.request_id}`, markErr);
+            }
+          } else if (message.includes("FOREIGN KEY") || message.includes("no such") || message.includes("conversation")) {
+            // 復元先の会話が既に削除されている等。復元不能なのでmarkして次回以降スキップする。
+            console.error(`conversation for stream run ${run.request_id} is unavailable, marking as recovered without appending`, err);
+            try {
+              await markStreamRunRecovered(run.request_id);
+            } catch (markErr) {
+              console.error(`failed to mark unrecoverable stream run ${run.request_id}`, markErr);
+            }
+          } else {
+            console.error(`failed to recover stream run ${run.request_id}`, err);
+          }
+        }
+      }
+      if (!cancelled) {
+        await refreshConversations(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     setCurrentConversationId(null);
     setConversationMessages([]);
@@ -666,7 +799,7 @@ export default function App() {
           ? "Contextを再読込。この地点より前の会話履歴を以後のAIリクエストへ含めない。"
           : "Contextを再読込。会話履歴は保持し、現在のContextを再評価する。",
         appliedContextIds: activeContextItems.map((item) => item.id),
-        targetSlotIds: activeSlots.map((slot) => slot.id),
+        targetSlotIds: activeTargetIds,
       });
       // Read back from SQLite so the reset boundary used by the next send is
       // the persisted source of truth, not a potentially stale React snapshot.
@@ -698,7 +831,7 @@ export default function App() {
         content: "AI Archive ReferenceをOFFにして独立観測へ戻る。この地点より前の会話履歴を以後のAIリクエストへ含めない。",
         appliedContextIds: remainingActive.map((item) => item.id),
         appliedAiReferenceSources: snapshotAppliedAiReferences(remainingActive),
-        targetSlotIds: activeSlots.map((slot) => slot.id),
+        targetSlotIds: activeTargetIds,
       });
       setConversationMessages((prev) => [...prev, marker]);
       setResults({});
@@ -713,7 +846,7 @@ export default function App() {
 
   async function handleSend() {
     if (!contextStorageReady) return;
-    if (!question.trim() || busy || activeSlots.length === 0) return;
+    if (!question.trim() || busy || activeTargetCount === 0) return;
     const outgoingQuestion = question.trim();
     const wasDraft = !currentConversationId;
     setBusy(true);
@@ -730,7 +863,7 @@ export default function App() {
         id: userMessageId, conversationId, role: "user", kind: "normal", content: outgoingQuestion,
         appliedContextIds: sendActiveItems.map((item) => item.id),
         appliedAiReferenceSources: snapshotAppliedAiReferences(sendActiveItems),
-        targetSlotIds: activeSlots.map((slot) => slot.id),
+        targetSlotIds: activeTargetIds,
       });
       // Reload the persisted transcript before assembling provider history.
       // This makes Context Reload boundaries authoritative even if React state
@@ -741,7 +874,7 @@ export default function App() {
       setQuestion("");
 
       const meta: typeof lastSendMeta = {};
-      const targets = activeSlots.map((slot) => {
+      const targets: BroadcastTarget[] = activeSlots.map((slot) => {
         const normalized = assembleContext({
           slotId: slot.id, projectId: currentProjectId, conversationId, contextItems: sendContextItems,
           history: historyForSlot(historyBeforeSend, slot.id), userMessage: outgoingQuestion,
@@ -753,27 +886,69 @@ export default function App() {
           aiReferenceSources: snapshotAppliedAiReferences(normalized.references),
         };
         return {
-          slotId: slot.id, provider: new TauriProvider(slot.key, slot.label, catalogForSlot(slot)), model: slot.model, messages: normalizedRequestToMessages(normalized),
+          slotId: slot.id, provider: new TauriProvider(slot.key, slot.label, catalogForSlot(slot)), model: slot.model, messages: normalizedRequestToMessages(normalized), conversationId,
         };
       });
-      setLastSendMeta(meta);
-      const finalResults = await broadcastQuestion(targets, outgoingQuestion, (result) => setResults((prev) => ({ ...prev, [result.slotId]: result })), { streaming: true });
-      const saved: ConversationMessage[] = [];
-      const messageIds: Record<string, string> = {};
-      for (const result of finalResults) {
-        if (result.status !== "completed") continue;
-        const slot = slots.find((candidate) => candidate.id === result.slotId);
-        if (!slot) continue;
-        const messageId = uid("message-ai");
-        const message = await appendConversationMessage({
-          id: messageId, conversationId, role: "assistant", kind: "normal", slotId: slot.id, provider: slot.key, model: result.model.id, nickname: slot.label,
-          content: result.content, inputTokens: result.inputTokens, outputTokens: result.outputTokens, costUsd: result.costUsd, elapsedMs: result.elapsedMs, appliedContextIds: meta[slot.id]?.contextIds ?? [],
-          appliedAiReferenceSources: meta[slot.id]?.aiReferenceSources ?? [],
+      // [Phase CP-1 MVP] Custom Providerも同じ経路でtargetsへ合流させる。
+      // assembleContext/historyForSlotはslotIdを文字列として扱うだけなので、
+      // built-inのslot.id同様、Custom ProviderのIDをそのまま渡せる。
+      for (const config of activeCustomProviders) {
+        const normalized = assembleContext({
+          slotId: config.id, projectId: currentProjectId, conversationId, contextItems: sendContextItems,
+          history: historyForSlot(historyBeforeSend, config.id), userMessage: outgoingQuestion,
         });
-        saved.push(message); messageIds[slot.id] = messageId;
+        meta[config.id] = {
+          question: outgoingQuestion,
+          contextIds: [...normalized.instructions, ...normalized.references].map((item) => item.id),
+          instructions: normalized.instructions.map((item) => `${item.title}: ${item.content}`),
+          aiReferenceSources: snapshotAppliedAiReferences(normalized.references),
+        };
+        targets.push({
+          slotId: config.id,
+          provider: new CustomOpenAICompatibleProvider(config.id, config.name, config.baseUrl, config.model),
+          model: makeCustomAIModel(config.id, config.model),
+          messages: normalizedRequestToMessages(normalized),
+          conversationId,
+        });
       }
-      setConversationMessages((prev) => [...prev, ...saved]);
-      setResultMessageIds(messageIds);
+      setLastSendMeta(meta);
+      // [Phase 1修正] 以前は broadcastQuestion() の完了(=全AI完了)を待ってから
+      // まとめてDB保存していたため、1AIが無応答のまま止まると、既に完了していた
+      // 他のAIの回答までDB保存されずに失われていた(アプリ再起動でも復元不能)。
+      // 対策として、onUpdate内で各AIが個別に"completed"になった瞬間に即座に
+      // 保存する。全体の完了(finalResults)を待つ必要はない。
+      const persistingSlotIds = new Set<string>();
+      const persistPromises: Promise<void>[] = [];
+      const onUpdate = (result: BroadcastResult) => {
+        setResults((prev) => ({ ...prev, [result.slotId]: result }));
+        if (result.status !== "completed" || persistingSlotIds.has(result.slotId)) return;
+        const slot = slots.find((candidate) => candidate.id === result.slotId);
+        const customConfig = activeCustomProviders.find((candidate) => candidate.id === result.slotId);
+        if (!slot && !customConfig) return;
+        const targetId = slot?.id ?? customConfig!.id;
+        const provider = slot?.key ?? customConfig!.id;
+        const nickname = slot?.label ?? customConfig!.name;
+        persistingSlotIds.add(result.slotId);
+        const messageId = uid("message-ai");
+        const persistPromise = appendConversationMessage({
+          id: messageId, conversationId, role: "assistant", kind: "normal", slotId: targetId, provider, model: result.model.id, nickname,
+          content: result.content, inputTokens: result.inputTokens, outputTokens: result.outputTokens, costUsd: result.costUsd, elapsedMs: result.elapsedMs, appliedContextIds: meta[targetId]?.contextIds ?? [],
+          appliedAiReferenceSources: meta[targetId]?.aiReferenceSources ?? [],
+        }).then((message) => {
+          setConversationMessages((prev) => [...prev, message]);
+          setResultMessageIds((prev) => ({ ...prev, [targetId]: messageId }));
+        }).catch((err) => {
+          // 保存に失敗した場合、この結果は「保存済み」ではないので取り消す
+          // (次にonUpdateが呼ばれる機会は基本無いが、保険として)
+          persistingSlotIds.delete(result.slotId);
+          console.error(`failed to persist AI response for slot ${targetId} immediately`, err);
+        });
+        persistPromises.push(persistPromise);
+      };
+      await broadcastQuestion(targets, outgoingQuestion, onUpdate, { streaming: true });
+      // 個別完了時に投げた保存Promiseが、conversations一覧の再読込前に
+      // 全て完了していることを保証する(competing raceを避ける)。
+      await Promise.allSettled(persistPromises);
       await refreshConversations(false);
       await refreshUsage();
     } catch (err) {
@@ -783,29 +958,166 @@ export default function App() {
     }
   }
 
-  function handleAddResultContext(slot: ProviderSlot, result: BroadcastResult) {
+  // [Phase 1継続 項目3] このAIだけ停止。現在streaming中のrequestIdをRust側へ伝え、
+  // tokio::select!でreqwestの接続自体を中断させる(orchestrator.tsのタイムアウトとは異なり、
+  // 実際にHTTPリクエストを止める)。
+  function handleCancelSlot(slotId: string) {
+    const requestId = results[slotId]?.requestId;
+    if (!requestId) return;
+    void cancelActiveStream(requestId).catch((err) => {
+      console.error(`failed to cancel stream for slot ${slotId}`, err);
+    });
+  }
+
+  // [Phase 1継続 項目3] このAIだけ再試行。既存の失敗/中断結果はそのまま残し
+  // (上書きしない)、新しいAI応答メッセージとして会話に追記する。
+  // retryは新規request_id・新規メッセージを作る方針(ProviderRunの状態機械の
+  // 設計原則: terminal状態からの巻き戻しはせず、新規runとして扱う)。
+  async function handleRetrySlot(slot: ProviderSlot) {
+    if (!currentConversationId || busy) return;
+    const meta = lastSendMeta[slot.id];
+    if (!meta?.question) return;
+
+    setResults((prev) => ({ ...prev, [slot.id]: { slotId: slot.id, model: slot.model, status: "sending", content: "" } }));
+
+    try {
+      const persistedNow = await loadConversationMessages(currentConversationId);
+      const selectionId = contextSetSelections[currentConversationId] ?? null;
+      const setForRetry = contextSets.find((set) => set.id === selectionId) ?? null;
+      const retryContextItems = contextItemsForConversation(contextItems, setForRetry, currentConversationId);
+      const normalized = assembleContext({
+        slotId: slot.id, projectId: currentProjectId, conversationId: currentConversationId, contextItems: retryContextItems,
+        history: historyForSlot(persistedNow, slot.id), userMessage: meta.question,
+      });
+      const target = {
+        slotId: slot.id, provider: new TauriProvider(slot.key, slot.label, catalogForSlot(slot)), model: slot.model, messages: normalizedRequestToMessages(normalized), conversationId: currentConversationId,
+      };
+
+      const persistPromises: Promise<void>[] = [];
+      const onUpdate = (result: BroadcastResult) => {
+        setResults((prev) => ({ ...prev, [result.slotId]: result }));
+        if (result.status !== "completed") return;
+        const persistPromise = appendConversationMessage({
+          id: uid("message-ai-retry"), conversationId: currentConversationId, role: "assistant", kind: "normal",
+          slotId: slot.id, provider: slot.key, model: result.model.id, nickname: slot.label,
+          content: result.content, inputTokens: result.inputTokens, outputTokens: result.outputTokens, costUsd: result.costUsd, elapsedMs: result.elapsedMs,
+          appliedContextIds: [...normalized.instructions, ...normalized.references].map((item) => item.id),
+          appliedAiReferenceSources: snapshotAppliedAiReferences(normalized.references),
+        }).then((message) => {
+          setConversationMessages((prev) => [...prev, message]);
+        }).catch((err) => {
+          console.error(`failed to persist retried response for slot ${slot.id}`, err);
+        });
+        persistPromises.push(persistPromise);
+      };
+
+      await broadcastQuestion([target], meta.question, onUpdate, { streaming: true });
+      await Promise.allSettled(persistPromises);
+      await refreshConversations(false);
+      await refreshUsage();
+    } catch (err) {
+      console.error(`retry failed for slot ${slot.id}`, err);
+    }
+  }
+
+  async function handleRetryCustomProvider(config: CustomProviderConfig) {
+    if (!currentConversationId || busy) return;
+    const meta = lastSendMeta[config.id];
+    if (!meta?.question) return;
+
+    setResults((prev) => ({ ...prev, [config.id]: { slotId: config.id, model: makeCustomAIModel(config.id, config.model), status: "sending", content: "" } }));
+
+    try {
+      const persistedNow = await loadConversationMessages(currentConversationId);
+      const selectionId = contextSetSelections[currentConversationId] ?? null;
+      const setForRetry = contextSets.find((set) => set.id === selectionId) ?? null;
+      const retryContextItems = contextItemsForConversation(contextItems, setForRetry, currentConversationId);
+      const normalized = assembleContext({
+        slotId: config.id, projectId: currentProjectId, conversationId: currentConversationId, contextItems: retryContextItems,
+        history: historyForSlot(persistedNow, config.id), userMessage: meta.question,
+      });
+      const target: BroadcastTarget = {
+        slotId: config.id, provider: new CustomOpenAICompatibleProvider(config.id, config.name, config.baseUrl, config.model), model: makeCustomAIModel(config.id, config.model), messages: normalizedRequestToMessages(normalized), conversationId: currentConversationId,
+      };
+
+      const persistPromises: Promise<void>[] = [];
+      const onUpdate = (result: BroadcastResult) => {
+        setResults((prev) => ({ ...prev, [result.slotId]: result }));
+        if (result.status !== "completed") return;
+        const persistPromise = appendConversationMessage({
+          id: uid("message-ai-retry"), conversationId: currentConversationId, role: "assistant", kind: "normal",
+          slotId: config.id, provider: config.id, model: result.model.id, nickname: config.name,
+          content: result.content, inputTokens: result.inputTokens, outputTokens: result.outputTokens, costUsd: result.costUsd, elapsedMs: result.elapsedMs,
+          appliedContextIds: [...normalized.instructions, ...normalized.references].map((item) => item.id),
+          appliedAiReferenceSources: snapshotAppliedAiReferences(normalized.references),
+        }).then((message) => {
+          setConversationMessages((prev) => [...prev, message]);
+        }).catch((err) => {
+          console.error(`failed to persist retried response for custom provider ${config.id}`, err);
+        });
+        persistPromises.push(persistPromise);
+      };
+
+      await broadcastQuestion([target], meta.question, onUpdate, { streaming: true });
+      await Promise.allSettled(persistPromises);
+      await refreshConversations(false);
+      await refreshUsage();
+    } catch (err) {
+      console.error(`retry failed for custom provider ${config.id}`, err);
+    }
+  }
+
+  function handleAddResultContext(slot: AIResponseSlot, result: BroadcastResult) {
     const meta = lastSendMeta[slot.id];
     addReference({
       kind: "ai_response", role: "reference", scope: "session", lifetime: "session", provenance: "ai_generated",
       title: `${slot.label} の回答`, content: result.content, enabled: true,
-      source: { provider: slot.key, model: result.model.id, nickname: slot.label, slotId: slot.id, messageId: uid("response") },
+      source: { provider: slot.provider, model: result.model.id, nickname: slot.label, slotId: slot.id, messageId: uid("response") },
       generation: { originalQuestion: meta?.question, appliedContextIds: meta?.contextIds, appliedInstructions: meta?.instructions },
     });
     setContextOpen(true);
   }
 
+  function handleRetryResponseSlot(slot: AIResponseSlot) {
+    if (slot.kind === "custom") {
+      const config = activeCustomProviders.find((candidate) => candidate.id === slot.id);
+      if (config) void handleRetryCustomProvider(config);
+      return;
+    }
+    const builtInSlot = slots.find((candidate) => candidate.id === slot.id);
+    if (builtInSlot) void handleRetrySlot(builtInSlot);
+  }
+
+  function openResultHandoff(slot: AIResponseSlot, result: BroadcastResult) {
+    const sendMeta = lastSendMeta[slot.id];
+    setHandoffSource({
+      slot,
+      result,
+      meta: {
+        nickname: slot.label,
+        provider: slot.provider,
+        model: result.model.id,
+        slotId: slot.id,
+        originalQuestion: sendMeta?.question,
+        sourceMessageId: resultMessageIds[slot.id],
+      },
+    });
+  }
+
   function openHistoricalHandoff(message: ConversationMessage, originalQuestion?: string) {
     if (message.role !== "assistant" || message.kind !== "normal" || !message.slot_id) return;
-    const slot = slots.find((candidate) => candidate.id === message.slot_id);
+    const slot = responseSlots.find((candidate) => candidate.id === message.slot_id);
     if (!slot) {
       console.warn("historical handoff source slot is unavailable", message.slot_id);
       return;
     }
 
     const historicalModelId = message.model ?? slot.model.id;
-    const historicalModel = (modelCatalogs[slot.key] ?? catalogForSlot(slot))
-      .find((candidate) => candidate.id === historicalModelId)
-      ?? { ...slot.model, id: historicalModelId, name: historicalModelId };
+    const historicalModel = slot.kind === "built_in" && slot.providerKey
+      ? ((modelCatalogs[slot.providerKey] ?? catalogForSlot(slots.find((candidate) => candidate.id === slot.id)!))
+        .find((candidate) => candidate.id === historicalModelId)
+        ?? { ...slot.model, id: historicalModelId, name: historicalModelId })
+      : { ...slot.model, id: historicalModelId, name: historicalModelId };
 
     const historicalResult: BroadcastResult = {
       slotId: slot.id,
@@ -823,7 +1135,7 @@ export default function App() {
       result: historicalResult,
       meta: {
         nickname: message.nickname ?? slot.label,
-        provider: message.provider ?? slot.key,
+        provider: message.provider ?? slot.provider,
         model: historicalModelId,
         slotId: slot.id,
         originalQuestion,
@@ -855,44 +1167,74 @@ export default function App() {
       conversationId: conversationKey,
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
-    const targets = slots.filter((slot) => request.targetSlotIds.includes(slot.id) && slot.keySaved).map((slot) => {
+    const targets: BroadcastTarget[] = request.targetSlotIds.flatMap((slotId): BroadcastTarget[] => {
+      const slot = responseSlots.find((candidate) => candidate.id === slotId);
+      if (!slot || !slot.keySaved) return [];
       const normalized = assembleContext({
         slotId: slot.id, projectId: currentProjectId, conversationId: conversationKey, contextItems: [...scopedContextItems, ephemeral],
         history: historyForSlot(conversationMessages, slot.id), userMessage: request.instruction,
       });
-      return { slotId: slot.id, provider: new TauriProvider(slot.key, slot.label, catalogForSlot(slot)), model: slot.model, messages: normalizedHandoffRequestToMessages(normalized, ephemeral) };
+      if (slot.kind === "custom") {
+        const config = activeCustomProviders.find((candidate) => candidate.id === slot.id);
+        if (!config) return [];
+        return [{
+          slotId: slot.id,
+          provider: new CustomOpenAICompatibleProvider(config.id, config.name, config.baseUrl, config.model),
+          model: makeCustomAIModel(config.id, config.model),
+          messages: normalizedHandoffRequestToMessages(normalized, ephemeral),
+          conversationId: currentConversationId ?? undefined,
+        }];
+      }
+      const builtInSlot = slots.find((candidate) => candidate.id === slot.id);
+      if (!builtInSlot || !slot.providerKey) return [];
+      return [{
+        slotId: builtInSlot.id,
+        provider: new TauriProvider(builtInSlot.key, builtInSlot.label, catalogForSlot(builtInSlot)),
+        model: builtInSlot.model,
+        messages: normalizedHandoffRequestToMessages(normalized, ephemeral),
+        conversationId: currentConversationId ?? undefined,
+      }];
     });
     try {
-      const finalResults = await broadcastQuestion(targets, request.instruction, (result) => {
+      // [Phase 1修正] 通常送信フローと同じ理由で、handoff(相互参照)結果も
+      // 全AI完了を待たず、個別完了の瞬間に即座に保存する。
+      const persistingSlotIds = new Set<string>();
+      const persistPromises: Promise<void>[] = [];
+      const onUpdate = (result: BroadcastResult) => {
         setHandoffRuns((prev) => prev.map((run) => run.id === runId ? { ...run, results: { ...run.results, [result.slotId]: result } } : run));
-      }, { streaming: true });
+        if (result.status !== "completed" || persistingSlotIds.has(result.slotId) || !currentConversationId) return;
+        const slot = responseSlots.find((candidate) => candidate.id === result.slotId);
+        if (!slot) return;
+        persistingSlotIds.add(result.slotId);
+        const persistPromise = appendConversationMessage({
+          id: uid("message-handoff"), conversationId: currentConversationId, role: "assistant", kind: "handoff",
+          slotId: slot.id, provider: slot.provider, model: result.model.id, nickname: slot.label, content: result.content,
+          inputTokens: result.inputTokens, outputTokens: result.outputTokens, costUsd: result.costUsd, elapsedMs: result.elapsedMs,
+          appliedContextIds: activeContextItems.map((item) => item.id),
+          appliedAiReferenceSources: snapshotAppliedAiReferences([ephemeral]),
+          parentMessageId: handoffRequestMessageId ?? request.sourceMeta.sourceMessageId,
+        }).then((message) => {
+          setConversationMessages((prev) => [...prev, message]);
+        }).catch((err) => {
+          persistingSlotIds.delete(result.slotId);
+          console.error(`failed to persist handoff response for slot ${slot.id} immediately`, err);
+        });
+        persistPromises.push(persistPromise);
+      };
+      await broadcastQuestion(targets, request.instruction, onUpdate, { streaming: true });
+      await Promise.allSettled(persistPromises);
       if (currentConversationId) {
-        const saved: ConversationMessage[] = [];
-        for (const result of finalResults) {
-          if (result.status !== "completed") continue;
-          const slot = slots.find((candidate) => candidate.id === result.slotId);
-          if (!slot) continue;
-          saved.push(await appendConversationMessage({
-            id: uid("message-handoff"), conversationId: currentConversationId, role: "assistant", kind: "handoff",
-            slotId: slot.id, provider: slot.key, model: result.model.id, nickname: slot.label, content: result.content,
-            inputTokens: result.inputTokens, outputTokens: result.outputTokens, costUsd: result.costUsd, elapsedMs: result.elapsedMs,
-            appliedContextIds: activeContextItems.map((item) => item.id),
-            appliedAiReferenceSources: snapshotAppliedAiReferences([ephemeral]),
-            parentMessageId: handoffRequestMessageId ?? request.sourceMeta.sourceMessageId,
-          }));
-        }
-        setConversationMessages((prev) => [...prev, ...saved]);
         await refreshConversations(false);
       }
       await refreshUsage();
     } catch { /* individual errors are represented in results */ }
   }
 
-  function handleAddHandoffResultContext(slot: ProviderSlot, result: BroadcastResult, run: HandoffRun) {
+  function handleAddHandoffResultContext(slot: AIResponseSlot, result: BroadcastResult, run: HandoffRun) {
     addReference({
       kind: "ai_response", role: "reference", scope: "session", lifetime: "session", provenance: "ai_generated",
       title: `${slot.label} の相互参照回答`, content: result.content, enabled: true,
-      source: { provider: slot.key, model: result.model.id, nickname: slot.label, slotId: slot.id, messageId: uid("handoff-response") },
+      source: { provider: slot.provider, model: result.model.id, nickname: slot.label, slotId: slot.id, messageId: uid("handoff-response") },
       generation: {
         originalQuestion: run.instruction,
         appliedContextIds: activeContextItems.map((item) => item.id),
@@ -903,12 +1245,12 @@ export default function App() {
   }
 
   function handleResize(index: number, startX: number) {
-    const startWidths = [...columnWidths];
+    const startWidths = responseSlots.map((_, i) => columnWidths[i] ?? 420);
     const move = (event: PointerEvent) => {
       const delta = event.clientX - startX;
       const next = [...startWidths];
-      next[index] = Math.max(280, startWidths[index] + delta);
-      if (index + 1 < next.length) next[index + 1] = Math.max(280, startWidths[index + 1] - delta);
+      next[index] = Math.max(280, (startWidths[index] ?? 420) + delta);
+      if (index + 1 < next.length) next[index + 1] = Math.max(280, (startWidths[index + 1] ?? 420) - delta);
       setColumnWidths(next);
     };
     const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
@@ -945,18 +1287,20 @@ export default function App() {
                 if (contextStorageReady) setContextOpen(true);
               }}
               disabled={!contextStorageReady && !contextStorageError}
-              title={contextStorageError ? `Context読込エラー。クリックで再試行: ${contextStorageError}` : (!contextStorageReady ? "ContextをSQLiteから読み込み中です" : "Contextを開く")}
-            >🧩 {contextStorageError ? "Context再読込を再試行" : (!contextStorageReady ? "Context読込中…" : "Context")}</button>
+              title={contextStorageError
+                ? t("Context読込エラー。クリックで再試行: {error}", { error: contextStorageError })
+                : (!contextStorageReady ? t("ContextをSQLiteから読み込み中です") : t("Contextを開く"))}
+            >🧩 {contextStorageError ? t("Context再読込を再試行") : (!contextStorageReady ? t("Context読込中…") : t("Context"))}</button>
             <button
               className="secondary-button context-reload-button"
               onClick={() => setContextReloadOpen(true)}
               disabled={!contextStorageReady || !currentConversationId || busy || contextReloadBusy}
               title={contextStorageError
-                ? `Context読込エラー: ${contextStorageError}`
+                ? t("Context読込エラー: {error}", { error: contextStorageError })
                 : (!contextStorageReady
-                  ? "ContextをSQLiteから読み込み中です"
-                  : (!currentConversationId ? "会話開始後にContext境界を作成できます" : "現在のContextを再評価し、会話履歴との境界を記録します"))}
-            >↻ 再読込</button>
+                  ? t("ContextをSQLiteから読み込み中です")
+                  : (!currentConversationId ? t("会話開始後にContext境界を作成できます") : t("現在のContextを再評価し、会話履歴との境界を記録します")))}
+            >↻ {t("再読込")}</button>
           </div>
           <button className="secondary-button" onClick={() => setTextPadOpen(true)}>📝 {t("テキスト")}</button>
           <button
@@ -988,15 +1332,17 @@ export default function App() {
 
       <ProjectBar projects={projects} currentProjectId={currentProjectId} onSelect={setCurrentProjectId} onCreate={(name) => void handleCreateProject(name)} onRename={(id, name) => void handleRenameProject(id, name)} onDelete={(id) => void handleDeleteProject(id)} onOpenLibrary={() => { if (contextStorageReady) setContextLibraryOpen(true); }} onOpenArchive={() => setConversationArchiveOpen(true)} />
 
-      {settingsOpen && <SettingsPanel slots={slots} theme={theme} setTheme={setTheme} timeZoneMode={timeZoneMode} setTimeZoneMode={setTimeZoneMode} manualTimeZone={manualTimeZone} setManualTimeZone={setManualTimeZone} turnOrder={turnOrder} setTurnOrder={setTurnOrder} modelCatalogs={modelCatalogs} modelLoading={modelLoading} modelErrors={modelErrors} onUpdateSlot={updateSlot} onSaveKey={handleSaveKey} onDeleteKey={handleDeleteKey} onRefreshModels={refreshModels} usage={usage} usageError={usageError} onRefreshUsage={refreshUsage} onClearUsage={handleClearUsage} displayCurrency={displayCurrency} setDisplayCurrency={setDisplayCurrency} currencyRates={currencyRates} setCurrencyRates={setCurrencyRates} onOpenTrialNotice={() => setTrialNoticeOpen(true)} onExportData={exportUserData} onImportData={importUserData} />}
+      {settingsOpen && <SettingsPanel slots={slots} theme={theme} setTheme={setTheme} timeZoneMode={timeZoneMode} setTimeZoneMode={setTimeZoneMode} manualTimeZone={manualTimeZone} setManualTimeZone={setManualTimeZone} turnOrder={turnOrder} setTurnOrder={setTurnOrder} modelCatalogs={modelCatalogs} modelLoading={modelLoading} modelErrors={modelErrors} onUpdateSlot={updateSlot} onSaveKey={handleSaveKey} onDeleteKey={handleDeleteKey} onRefreshModels={refreshModels} usage={usage} usageError={usageError} onRefreshUsage={refreshUsage} onClearUsage={handleClearUsage} displayCurrency={displayCurrency} setDisplayCurrency={setDisplayCurrency} currencyRates={currencyRates} setCurrencyRates={setCurrencyRates} onOpenTrialNotice={() => setTrialNoticeOpen(true)} onExportData={exportUserData} onImportData={importUserData} customProviders={customProviders} onAddCustomProvider={addCustomProvider} onUpdateCustomProvider={updateCustomProvider} onRemoveCustomProvider={removeCustomProvider} onSaveCustomProviderKey={saveCustomProviderKey} onDeleteCustomProviderKey={deleteCustomProviderKey} />}
 
       <ProviderGrid
         slots={slots}
+        customProviders={customProviders}
         onToggle={(slotId, enabled) => updateSlot(slotId, { enabled })}
+        onToggleCustomProvider={(providerId, enabled) => updateCustomProvider(providerId, { enabled })}
         onMove={moveProviderSlot}
         onReorder={reorderProviderSlot}
       />
-      <QuestionComposer question={question} onQuestionChange={setQuestion} onSend={() => void handleSend()} busy={busy} activeCount={activeSlots.length} totalCount={slots.length} estimateText={estimateText} estimateLabel={estimateLabel} recommendations={recommendations} recommendationsEnabled={recommendationsEnabled} onToggleRecommendations={setRecommendationsEnabled} onUseRecommendation={(slotId, model) => updateSlot(slotId, { model })} onOpenModelPicker={setModelPickerSlotId} contextCount={activeContextItems.length} contextTokens={contextTokens} contextWarning={contextWarning} contextPreview={contextPreview} onOpenContext={() => setContextOpen(true)} contextReady={contextStorageReady} contextStorageError={contextStorageError} />
+      <QuestionComposer question={question} onQuestionChange={setQuestion} onSend={() => void handleSend()} busy={busy} activeCount={activeTargetCount} totalCount={totalTargetCount} estimateText={estimateText} estimateLabel={estimateLabel} recommendations={recommendations} recommendationsEnabled={recommendationsEnabled} onToggleRecommendations={setRecommendationsEnabled} onUseRecommendation={(slotId, model) => updateSlot(slotId, { model })} onOpenModelPicker={setModelPickerSlotId} contextCount={activeContextItems.length} contextTokens={contextTokens} contextWarning={contextWarning} contextPreview={contextPreview} onOpenContext={() => setContextOpen(true)} contextReady={contextStorageReady} contextStorageError={contextStorageError} />
 
       {textPadOpen && <TextPad
         timeZone={displayTimeZone}
@@ -1038,8 +1384,39 @@ export default function App() {
         onOpenLibrary={() => { setConversationArchiveOpen(false); setContextLibraryOpen(true); }}
       />
 
-      <ResultBoard slots={slots} results={results} columnWidths={columnWidths} onResize={handleResize} displayCurrency={displayCurrency} currencyRate={displayRate} onAddContext={handleAddResultContext} onOpenModelPicker={setModelPickerSlotId} onHandoff={(slot, result) => { const sendMeta = lastSendMeta[slot.id]; setHandoffSource({ slot, result, meta: { nickname: slot.label, provider: slot.key, model: result.model.id, slotId: slot.id, originalQuestion: sendMeta?.question, sourceMessageId: resultMessageIds[slot.id] } }); }} />
-      <HandoffResults runs={handoffRuns} slots={slots} displayCurrency={displayCurrency} currencyRate={displayRate} onAddContext={handleAddHandoffResultContext} />
+      <section style={{ margin: "10px 0", padding: "10px 12px", border: "1px solid var(--border, rgba(127,127,127,.3))", borderRadius: 10 }}>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={deltaEnabled}
+            onChange={(event) => {
+              const next = event.target.checked;
+              setDeltaEnabled(next);
+              writeStorage("ai-ensemble-delta-enabled", next);
+            }}
+          />
+          <strong>{t("Δ Delta Protocol（実験機能）")}</strong>
+        </label>
+        <small style={{ display: "block", marginTop: 4, opacity: .7 }}>
+          {t("Conversationを先に保存し、その後Delta解析を行います。OFFでも従来のECHO動作は変わりません。")}
+        </small>
+        {deltaEnabled && (
+          <DeltaErrorBoundary>
+            <Suspense fallback={<small>{t("Deltaを読み込み中…")}</small>}>
+              <DeltaConversationInspector messages={conversationMessages} />
+              <DeltaWorkbenchGate
+                messages={conversationMessages}
+                responseSlots={responseSlots}
+                builtInSlots={slots}
+                customProviders={activeCustomProviders}
+              />
+            </Suspense>
+          </DeltaErrorBoundary>
+        )}
+      </section>
+
+      <ResultBoard slots={responseSlots} results={results} columnWidths={columnWidths} onResize={handleResize} displayCurrency={displayCurrency} currencyRate={displayRate} onAddContext={handleAddResultContext} onOpenModelPicker={setModelPickerSlotId} onCancel={handleCancelSlot} onRetry={handleRetryResponseSlot} onHandoff={openResultHandoff} />
+      <HandoffResults runs={handoffRuns} slots={responseSlots} displayCurrency={displayCurrency} currencyRate={displayRate} onAddContext={handleAddHandoffResultContext} />
       <ConversationHistory
         messages={conversationMessages}
         displayCurrency={displayCurrency} currencyRate={displayRate}
@@ -1070,7 +1447,7 @@ export default function App() {
 
       <ConfirmModal open={conversationDeleteTarget !== null} title={t("この会話を削除しますか？")} message={t("SQLiteに保存されたConversationとメッセージ履歴を削除します。この操作は元に戻せません。")} onCancel={() => setConversationDeleteTarget(null)} onConfirm={() => { const id = conversationDeleteTarget; setConversationDeleteTarget(null); if (id) void removeConversation(id); }} />
 
-      {handoffSource && <HandoffModal sourceSlot={handoffSource.slot} sourceResult={handoffSource.result} sourceMeta={handoffSource.meta} slots={slots} onClose={() => setHandoffSource(null)} onSend={(request) => void handleHandoff(request)} />}
+      {handoffSource && <HandoffModal sourceSlot={handoffSource.slot} sourceResult={handoffSource.result} sourceMeta={handoffSource.meta} slots={responseSlots} onClose={() => setHandoffSource(null)} onSend={(request) => void handleHandoff(request)} />}
       {modelPickerSlotId && (() => {
         const slot = slots.find((candidate) => candidate.id === modelPickerSlotId);
         if (!slot) return null;

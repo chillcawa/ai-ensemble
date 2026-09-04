@@ -7,12 +7,15 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
+$PackageJsonPath = Join-Path $ProjectRoot "package.json"
+$AppVersion = (Get-Content -LiteralPath $PackageJsonPath -Raw | ConvertFrom-Json).version
+$VersionLabel = "v$AppVersion"
 $ManifestPath = Join-Path $ProjectRoot "src-tauri\Cargo.toml"
 $LockfilePath = Join-Path $ProjectRoot "src-tauri\Cargo.lock"
 $LocalBuildRoot = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { [System.IO.Path]::GetTempPath() }
 $CargoBuildBase = Join-Path $LocalBuildRoot "AI-Ensemble-Build"
 $ExistingCargoTarget = if (Test-Path $CargoBuildBase) {
-  Get-ChildItem -LiteralPath $CargoBuildBase -Directory -Filter "v1.3.4-*" |
+  Get-ChildItem -LiteralPath $CargoBuildBase -Directory -Filter "$VersionLabel-*" |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
 } else {
@@ -21,11 +24,11 @@ $ExistingCargoTarget = if (Test-Path $CargoBuildBase) {
 $CargoTargetDir = if ($ExistingCargoTarget) {
   $ExistingCargoTarget.FullName
 } else {
-  Join-Path $CargoBuildBase "v1.3.4-shared"
+  Join-Path $CargoBuildBase "$VersionLabel-shared"
 }
 $NsisPath = Join-Path $CargoTargetDir "release\bundle\nsis"
 $ReleaseOutputPath = Join-Path $ProjectRoot "release-output"
-$HandoffPath = Join-Path $ProjectRoot "AI-Ensemble-v1.3.4-OSS-VERIFIED-SOURCE.zip"
+$HandoffPath = Join-Path $ProjectRoot "AI-Ensemble-ECHO-$VersionLabel-OSS-VERIFIED-SOURCE.zip"
 
 function Write-Step {
   param([Parameter(Mandatory = $true)][string]$Message)
@@ -107,7 +110,7 @@ if (-not $SkipInstaller) {
 
 Write-Step "Creating the verified source handoff archive"
 $TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ai-ensemble-handoff-" + [guid]::NewGuid().ToString("N"))
-$PayloadPath = Join-Path $TempRoot "AI-Ensemble-v1.3.4-OSS-VERIFIED-SOURCE"
+$PayloadPath = Join-Path $TempRoot "AI-Ensemble-ECHO-$VersionLabel-OSS-VERIFIED-SOURCE"
 New-Item -ItemType Directory -Path $PayloadPath -Force | Out-Null
 try {
   $ExcludedNames = @("node_modules", "dist", ".git", "release-output", "tsconfig.tsbuildinfo")
@@ -145,4 +148,4 @@ if (-not $SkipInstaller) {
   Write-Host "Windows installer: $ReleaseOutputPath"
   Write-Host "Install the generated package once and confirm launch before publishing a release tag."
 }
-Write-Host "Send AI-Ensemble-v1.3.4-OSS-VERIFIED-SOURCE.zip back for the final publication audit."
+Write-Host "Send AI-Ensemble-ECHO-$VersionLabel-OSS-VERIFIED-SOURCE.zip back for the final publication audit."

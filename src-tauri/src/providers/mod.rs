@@ -1,5 +1,6 @@
 pub mod anthropic;
 pub mod cohere;
+pub mod custom_openai;
 pub mod deepseek;
 pub mod gemini;
 pub mod kimi;

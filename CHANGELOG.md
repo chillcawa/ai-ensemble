@@ -2,6 +2,30 @@
 
 All notable changes are documented here. The project currently uses alpha-level release practices.
 
+## 1.3.5 — Delta experimental integration, Custom Provider, and release hardening
+
+- Added an opt-in experimental Delta Protocol analysis sidecar that operates on already-saved Conversation data without replacing the Conversation source of truth.
+- Added Delta IR inspection, structured comparison, unresolved-state preservation, Human-only Resolution controls, decision history, and provenance-oriented views.
+- Changed the Delta processing model from ChatGPT-only to one selectable currently available model; Translator and Comparator use the selected single processor.
+- Added Japanese, English, Simplified Chinese, and Korean localization across the Delta UI, model-recommendation explanations, capability labels, and top-level reload/context status controls.
+- Added a Comparator empty-result confirmation pass so cautious model output can be rechecked once without forcing a relation when comparison is genuinely unsupported.
+- Hardened Delta cohort selection and reference-source lineage normalization, including context-lineage handling for saved Conversation analysis.
+- Hardened Human Resolution persistence and integrity checks, partial unresolved-state closure, duplicate reopen prevention, and saved warning/failure retention.
+- Ensured stream timeout handling cancels the underlying Rust/provider stream instead of only ending the UI task.
+- Retained the production white-screen fixes for packaged builds, including guarded Delta loading/error boundaries and the packaged-build compatibility fixes already present in the release configuration.
+
+### Custom Provider MVP polish
+
+- Hotfix 4: Promoted Custom Provider responses into the normal response slot UI, including Context add, one-hop Handoff, retry, stop, Custom badges, safer local URL presets, and friendlier connection errors.
+- Hotfix 3: Added Simplified Chinese and Korean translations for Custom Provider beta guidance and Global Instruction shared-scope copy.
+- Hotfix 2: Clarified that Custom Provider (beta) supports OpenAI-compatible APIs only, with examples and notes for Claude/Gemini official API limitations.
+- Hotfix: Added Custom Provider entries to the main target-AI slider/count so LM Studio/Ollama can be selected and sent from the normal composer.
+- Hotfix: Persisted completed Custom Provider responses in the conversation log instead of only showing them in the live result board.
+- Bumped application metadata to v1.3.5 across package, Tauri, Cargo, and in-app version display.
+- Changed the default Turn display order to newest-first for fresh installations.
+- Polished Custom Provider (beta) setup with LM Studio / Ollama presets, optional API-key entry during creation, clearer labels, and Base URL normalization when `/chat/completions` is pasted.
+- Added explanatory and safety copy to Global Instruction so users understand it is shared across all projects and should not contain secrets.
+
 ## 1.3.4 — ECHO release candidate
 
 - Adopted the product name **AI Ensemble — ECHO**: Evaluation, Comparison & Hallucination Observation.

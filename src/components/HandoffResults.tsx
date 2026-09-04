@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { BroadcastResult } from "../orchestrator/orchestrator";
-import type { DisplayCurrency, ProviderSlot } from "../types/app";
+import type { AIResponseSlot, DisplayCurrency } from "../types/app";
 import { formatCostCurrency } from "../format";
 import type { HandoffSourceMeta } from "./HandoffModal";
 import { useI18n } from "../i18n";
@@ -17,10 +17,10 @@ export interface HandoffRun {
 
 export function HandoffResults({ runs, slots, displayCurrency, currencyRate, onAddContext }: {
   runs: HandoffRun[];
-  slots: ProviderSlot[];
+  slots: AIResponseSlot[];
   displayCurrency: DisplayCurrency;
   currencyRate: number;
-  onAddContext: (slot: ProviderSlot, result: BroadcastResult, run: HandoffRun) => void;
+  onAddContext: (slot: AIResponseSlot, result: BroadcastResult, run: HandoffRun) => void;
 }) {
   const { t } = useI18n();
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -71,7 +71,7 @@ export function HandoffResults({ runs, slots, displayCurrency, currencyRate, onA
                   <div className="result-header"><div><strong>{slotName(slotId)}</strong><span className="model-caption">{result.model.id}</span></div><span className={`status status-${result.status}`}>{result.status}</span></div>
                   {result.error && <div className="error">{result.error}</div>}
                   {slot && (result.status === "streaming" || result.status === "completed") && (
-                    <div className="response-identity-warning">{t("注意：このレスは {name} によるものです。", { name: providerDefaultNickname(slot.key) })}</div>
+                    <div className="response-identity-warning">{t("注意：このレスは {name} によるものです。", { name: slot.kind === "custom" ? slot.label : (slot.providerKey ? providerDefaultNickname(slot.providerKey) : slot.label) })}</div>
                   )}
                   {result.truncated && <div className="output-limit-warning">{t("⚠ 出力上限に達したため、回答が途中で終了しました。")}</div>}
                   <div className="answer">{result.content}</div>

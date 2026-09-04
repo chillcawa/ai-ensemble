@@ -1,19 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import type { ProviderSlot } from "../types/app";
+import type { CustomProviderConfig } from "../types/customProvider";
 import { capabilityBadges } from "../models/capabilities";
 import { providerImportSupport } from "../archive/registry";
 import { providerDefinition } from "../providers/registry";
 import { useI18n } from "../i18n";
 import { slotIdAtPoint } from "../models/slotOrder";
 
-export function ProviderGrid({ slots, onToggle, onMove, onReorder }: {
+export function ProviderGrid({ slots, customProviders, onToggle, onToggleCustomProvider, onMove, onReorder }: {
   slots: ProviderSlot[];
+  customProviders: CustomProviderConfig[];
   onToggle: (slotId: string, enabled: boolean) => void;
+  onToggleCustomProvider: (providerId: string, enabled: boolean) => void;
   onMove: (slotId: string, direction: -1 | 1) => void;
   onReorder: (draggedSlotId: string, targetSlotId: string) => void;
 }) {
   const { t } = useI18n();
   const stripRef = useRef<HTMLElement | null>(null);
+  const totalTargets = slots.length + customProviders.length;
+  const selectedTargets = slots.filter((slot) => slot.enabled).length + customProviders.filter((config) => config.enabled).length;
   const [position, setPosition] = useState({ index: 0, atStart: true, atEnd: false });
   const [draggedSlotId, setDraggedSlotId] = useState<string | null>(null);
   const [dropTargetSlotId, setDropTargetSlotId] = useState<string | null>(null);
@@ -26,8 +31,9 @@ export function ProviderGrid({ slots, onToggle, onMove, onReorder }: {
     const maxScroll = Math.max(0, strip.scrollWidth - strip.clientWidth);
     const firstCard = strip.querySelector<HTMLElement>(".provider-card");
     const step = (firstCard?.offsetWidth ?? 248) + 16;
+    const denominator = Math.max(1, totalTargets);
     setPosition({
-      index: Math.min(slots.length - 1, Math.max(0, Math.round(strip.scrollLeft / step))),
+      index: Math.min(denominator - 1, Math.max(0, Math.round(strip.scrollLeft / step))),
       atStart: strip.scrollLeft <= 2,
       atEnd: maxScroll <= 2 || strip.scrollLeft >= maxScroll - 2,
     });
@@ -45,7 +51,7 @@ export function ProviderGrid({ slots, onToggle, onMove, onReorder }: {
 
     // Some Windows WebViews report the pointer-capturing handle from
     // elementFromPoint(), even while the pointer is visibly over another card.
-    // Compare against every card's viewport rectangle instead.
+    // Compare against every built-in provider card's viewport rectangle instead.
     const strip = stripRef.current;
     const cards = strip
       ? Array.from(strip.querySelectorAll<HTMLElement>("[data-provider-slot-id]"))
@@ -87,18 +93,18 @@ export function ProviderGrid({ slots, onToggle, onMove, onReorder }: {
       window.cancelAnimationFrame(frame);
       window.removeEventListener("resize", updatePosition);
     };
-  }, [slots.length]);
+  }, [slots.length, customProviders.length]);
 
   return (
     <section className="provider-slider">
       <div className="provider-slider-toolbar">
         <div>
           <strong>{t("送信対象AI")}</strong>
-          <small>{slots.filter((slot) => slot.enabled).length} / {slots.length} {t("選択中")}</small>
+          <small>{selectedTargets} / {totalTargets} {t("選択中")}</small>
           <small className="provider-reorder-hint">⠿ {t("ドラッグして並べ替え")}</small>
         </div>
         <div className="provider-slider-controls">
-          <small>{Math.min(position.index + 1, slots.length)} / {slots.length}</small>
+          <small>{Math.min(position.index + 1, Math.max(1, totalTargets))} / {Math.max(1, totalTargets)}</small>
           <button type="button" className="secondary-button" disabled={position.atStart} onClick={() => slide(-1)} aria-label={t("前のAIを表示")}>‹</button>
           <button type="button" className="secondary-button" disabled={position.atEnd} onClick={() => slide(1)} aria-label={t("次のAIを表示")}>›</button>
         </div>
@@ -152,12 +158,33 @@ export function ProviderGrid({ slots, onToggle, onMove, onReorder }: {
           </label>
           <div className="model-caption">{slot.model.id}</div>
           <div className="provider-capability-strip">
-            {capabilityBadges(slot.model).slice(0, 4).map((badge) => <span key={badge.label} className={`capability-badge ${badge.tone}`}>{badge.label}</span>)}
+            {capabilityBadges(slot.model).slice(0, 4).map((badge) => <span key={badge.label} className={`capability-badge ${badge.tone}`} title={badge.title ? t(badge.title) : undefined}>{t(badge.label)}</span>)}
           </div>
           <div className="provider-status">{slot.keySaved ? t("✓ APIキー設定済み") : t("⚠ APIキー未設定（設定から登録）")} ・ {providerMeta.displayName}</div>
           <div className="provider-import-status">{t("翻訳機")}: {importSupport.status === "dedicated" ? importSupport.dedicated.map((adapter) => adapter.displayName).join(" / ") : "Generic fallback"}</div>
         </div>
       );})}
+      {customProviders.map((config, index) => (
+        <div className="provider-card custom-provider-target-card" key={config.id}>
+          <div className="provider-card-order-row">
+            <span>{slots.length + index + 1}</span>
+            <span className="selection-hint">Custom Provider β</span>
+          </div>
+          <label className="provider-title">
+            <input type="checkbox" checked={config.enabled} onChange={(e) => onToggleCustomProvider(config.id, e.target.checked)} />
+            {config.name}
+            <span className="selection-hint">{config.enabled ? t("送信対象") : t("送信対象外")}</span>
+          </label>
+          <div className="model-caption">{config.model}</div>
+          <div className="provider-capability-strip">
+            <span className="capability-badge good">stream</span>
+            <span className="capability-badge neutral">OpenAI互換</span>
+            <span className="capability-badge neutral">β</span>
+          </div>
+          <div className="provider-status">{config.keySaved ? t("✓ APIキー設定済み") : t("APIキー任意 / 未設定")} ・ {config.baseUrl}</div>
+          <div className="provider-import-status">{t("翻訳機")}: Custom / Generic fallback</div>
+        </div>
+      ))}
       </section>
     </section>
   );

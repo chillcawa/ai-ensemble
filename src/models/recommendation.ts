@@ -6,7 +6,10 @@ export type RecommendationIntent = "code" | "complex" | "writing" | "simple" | "
 export interface ModelRecommendation {
   slot: ProviderSlot;
   model: AIModel;
+  /** Japanese source string used as the canonical i18n key. */
   reason: string;
+  /** Optional Japanese source strings appended to the localized reason. */
+  reasonNotes: string[];
   intent: RecommendationIntent;
   fallback: boolean;
 }
@@ -63,29 +66,38 @@ function scoreModel(model: AIModel, intent: RecommendationIntent): number {
   return score;
 }
 
-function buildReason(model: AIModel, intent: RecommendationIntent, fallback: boolean): string {
+function buildReason(model: AIModel, intent: RecommendationIntent, fallback: boolean): Pick<ModelRecommendation, "reason" | "reasonNotes"> {
   const c = model.capabilities;
   const tier = c.performanceClass;
-  const sourceNote = c.source === "inferred" ? "（能力情報はモデルID等からの推定を含みます）" : "";
+  const reasonNotes: string[] = [];
+
+  if (intent === "complex" && c.maxContextTokens && c.maxContextTokens >= 500_000) {
+    reasonNotes.push("長いContextにも余裕があります。");
+  }
+  if (c.source === "inferred") {
+    reasonNotes.push("（能力情報はモデルID等からの推定を含みます）");
+  }
 
   if (intent === "simple") {
-    if (tier === "fast") return `短い質問なので、このProviderの軽量/高速モデルを優先しました。${sourceNote}`;
-    if (fallback) return `軽量/高速と分類された利用可能モデルがないため、現在使える候補から性能・速度のバランスを優先しました。${sourceNote}`;
-    return `短い質問なので、現在利用可能な候補の中で過剰な性能を避ける方向で選びました。${sourceNote}`;
+    if (tier === "fast") return { reason: "短い質問なので、このProviderの軽量/高速モデルを優先しました。", reasonNotes };
+    if (fallback) return { reason: "軽量/高速と分類された利用可能モデルがないため、現在使える候補から性能・速度のバランスを優先しました。", reasonNotes };
+    return { reason: "短い質問なので、現在利用可能な候補の中で過剰な性能を避ける方向で選びました。", reasonNotes };
   }
   if (intent === "code") {
-    return c.tools
-      ? `コード・実装・デバッグを含むため、高性能区分とTools対応を重視しました。${sourceNote}`
-      : `コード・実装・デバッグを含むため、利用可能モデルの性能区分を重視しました。${sourceNote}`;
+    return {
+      reason: c.tools
+        ? "コード・実装・デバッグを含むため、高性能区分とTools対応を重視しました。"
+        : "コード・実装・デバッグを含むため、利用可能モデルの性能区分を重視しました。",
+      reasonNotes,
+    };
   }
   if (intent === "complex") {
-    const ctx = c.maxContextTokens && c.maxContextTokens >= 500_000 ? "長いContextにも余裕があります。" : "";
-    return `複数段階の分析・推論が必要なため、高性能区分・Tools・Context容量を評価しました。${ctx}${sourceNote}`;
+    return { reason: "複数段階の分析・推論が必要なため、高性能区分・Tools・Context容量を評価しました。", reasonNotes };
   }
   if (intent === "writing") {
-    return `文章処理が中心なので、バランス型または高性能型を優先しました。${sourceNote}`;
+    return { reason: "文章処理が中心なので、バランス型または高性能型を優先しました。", reasonNotes };
   }
-  return `一般用途として、性能区分・Streaming・利用可能性のバランスから選びました。${sourceNote}`;
+  return { reason: "一般用途として、性能区分・Streaming・利用可能性のバランスから選びました。", reasonNotes };
 }
 
 export function recommendModelsForSlots(
@@ -108,7 +120,7 @@ export function recommendModelsForSlots(
         .sort((a, b) => b.score - a.score || a.model.name.localeCompare(b.model.name));
       const selected = scored[0].model;
       const fallback = intent === "simple" && !usable.some((m) => m.capabilities.performanceClass === "fast");
-      return { slot, model: selected, reason: buildReason(selected, intent, fallback), intent, fallback };
+      return { slot, model: selected, ...buildReason(selected, intent, fallback), intent, fallback };
     })
     .filter((value): value is ModelRecommendation => value !== null);
 }

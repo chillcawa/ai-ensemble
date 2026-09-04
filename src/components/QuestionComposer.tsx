@@ -81,10 +81,10 @@ export function QuestionComposer({
                   <code className="recommendation-model-id">{recommendation.model.id}</code>
                   <div className="capability-badges recommendation-capabilities">
                     {capabilityBadges(recommendation.model).map((badge) => (
-                      <span key={badge.label} className={`capability-badge ${badge.tone}`}>{badge.label}</span>
+                      <span key={badge.label} className={`capability-badge ${badge.tone}`} title={badge.title ? t(badge.title) : undefined}>{t(badge.label)}</span>
                     ))}
                   </div>
-                  <p className="recommendation-reason">{recommendation.reason}</p>
+                  <p className="recommendation-reason">{[recommendation.reason, ...recommendation.reasonNotes].map((part) => t(part)).join(resolvedLocale === "ja" || resolvedLocale === "zh-CN" ? "" : " ")}</p>
                   <button
                     className="secondary-button"
                     onClick={() => alreadySelected

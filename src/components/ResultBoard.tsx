@@ -1,20 +1,24 @@
 import { useRef, useState } from "react";
 import type { BroadcastResult } from "../orchestrator/orchestrator";
-import type { DisplayCurrency, ProviderSlot } from "../types/app";
+import type { AIResponseSlot, DisplayCurrency } from "../types/app";
 import { formatCostCurrency } from "../format";
 import { useI18n } from "../i18n";
 import { providerDefaultNickname } from "../providers/registry";
 
-export function ResultBoard({ slots, results, columnWidths, onResize, displayCurrency, currencyRate, onAddContext, onHandoff, onOpenModelPicker }: {
-  slots: ProviderSlot[];
+export function ResultBoard({ slots, results, columnWidths, onResize, displayCurrency, currencyRate, onAddContext, onHandoff, onOpenModelPicker, onCancel, onRetry }: {
+  slots: AIResponseSlot[];
   results: Record<string, BroadcastResult>;
   columnWidths: number[];
   onResize: (index: number, startX: number) => void;
   displayCurrency: DisplayCurrency;
   currencyRate: number;
-  onAddContext: (slot: ProviderSlot, result: BroadcastResult) => void;
-  onHandoff: (slot: ProviderSlot, result: BroadcastResult) => void;
+  onAddContext: (slot: AIResponseSlot, result: BroadcastResult) => void;
+  onHandoff: (slot: AIResponseSlot, result: BroadcastResult) => void;
   onOpenModelPicker: (slotId: string) => void;
+  /** [Phase 1継続 項目3] このAIだけ停止。streaming/sending中のみ呼ばれ得る。 */
+  onCancel: (slotId: string) => void;
+  /** [Phase 1継続 項目3] このAIだけ再試行。error/cancelled/timeout後に呼ばれ得る。 */
+  onRetry: (slot: AIResponseSlot) => void;
 }) {
   const { t } = useI18n();
   const visible = slots.filter((s) => s.enabled);
@@ -47,6 +51,11 @@ export function ResultBoard({ slots, results, columnWidths, onResize, displayCur
     window.setTimeout(() => setCopiedSlotId((current) => current === slotId ? null : current), 1400);
   }
 
+  function identityName(slot: AIResponseSlot): string {
+    if (slot.kind === "custom") return slot.label;
+    return slot.providerKey ? providerDefaultNickname(slot.providerKey) : slot.label;
+  }
+
   return (
     <section className="result-board">
       <div className="results-sticky-nav">
@@ -68,6 +77,7 @@ export function ResultBoard({ slots, results, columnWidths, onResize, displayCur
               >
                 <button type="button" onClick={() => jumpToAi(index)} title={t("AIへ移動", { name: slot.label })}>
                   <strong>{slot.label}</strong>
+                  {slot.kind === "custom" && <span className="custom-provider-badge">Custom</span>}
                   <span>{slot.model.id}</span>
                 </button>
               </div>
@@ -86,17 +96,34 @@ export function ResultBoard({ slots, results, columnWidths, onResize, displayCur
           const result = results[slot.id];
           return (
             <div className="result-column" style={{ width: columnWidths[index] ?? 420 }} key={slot.id}>
-              <div className="result-card">
+              <div className={`result-card${slot.kind === "custom" ? " custom-provider-result-card" : ""}`}>
                 <div className="result-header">
-                  <div><strong>{slot.label}</strong><button className="model-caption model-shortcut" onClick={() => onOpenModelPicker(slot.id)} title={t("モデルを切り替える")}>{slot.model.id} ▾</button></div>
+                  <div>
+                    <strong>{slot.label}</strong>
+                    {slot.kind === "custom" && <span className="custom-provider-badge">Custom</span>}
+                    {slot.kind === "built_in" ? (
+                      <button className="model-caption model-shortcut" onClick={() => onOpenModelPicker(slot.id)} title={t("モデルを切り替える")}>{slot.model.id} ▾</button>
+                    ) : (
+                      <span className="model-caption">{slot.model.id}</span>
+                    )}
+                  </div>
                   {result && <span className={`status status-${result.status}`}>{statusLabel(result.status, t)}{result.elapsedMs ? ` (${result.elapsedMs}ms)` : ""}</span>}
+                  {result && (result.status === "sending" || result.status === "streaming") && (
+                    <button className="secondary-button stop-button" onClick={() => onCancel(slot.id)} title={t("このAIだけ停止")}>{t("■ 停止")}</button>
+                  )}
                 </div>
-                {result?.error && <div className="error">{result.error}</div>}
+                {slot.kind === "custom" && <div className="provider-status custom-provider-inline-note">{t("OpenAI互換API（β）")} ・ {slot.baseUrl}</div>}
+                {result?.error && <div className="error">{slot.kind === "custom" ? customProviderErrorMessage(result.error, t) : result.error}</div>}
                 {result && (result.status === "streaming" || result.status === "completed") && (
-                  <div className="response-identity-warning">{t("注意：このレスは {name} によるものです。", { name: providerDefaultNickname(slot.key) })}</div>
+                  <div className="response-identity-warning">{t("注意：このレスは {name} によるものです。", { name: identityName(slot) })}</div>
                 )}
                 {result?.truncated && <div className="output-limit-warning">{t("⚠ 出力上限に達したため、回答が途中で終了しました。")}</div>}
                 <div className="answer">{result?.content}</div>
+                {result && (result.status === "error" || result.status === "cancelled") && (
+                  <div className="result-actions">
+                    <button className="secondary-button" onClick={() => onRetry(slot)} title={t("このAIだけ再試行")}>{t("↻ 再試行")}</button>
+                  </div>
+                )}
                 {result?.status === "completed" && (
                   <>
                     <div className="result-actions">
@@ -139,4 +166,12 @@ function statusLabel(status: BroadcastResult["status"], t: (key: string) => stri
     case "cancelled": return t("中断");
     default: return "";
   }
+}
+
+function customProviderErrorMessage(error: string, t: (key: string) => string): string {
+  const lower = error.toLowerCase();
+  if (lower.includes("error sending request") || lower.includes("connection") || lower.includes("network") || lower.includes("failed to fetch")) {
+    return `${t("Custom Providerに接続できませんでした。Base URL、ローカルサーバー起動状態、モデル名を確認してください。")}\n${t("詳細")}: ${error}`;
+  }
+  return error;
 }

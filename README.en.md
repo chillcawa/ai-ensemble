@@ -1,4 +1,4 @@
-# AI Ensemble — ECHO v1.3.4
+# AI Ensemble — ECHO v1.3.5
 
 **Evaluation, Comparison & Hallucination Observation**
 
@@ -30,6 +30,14 @@ Only providers with a saved API key can be selected for sending.
 
 API keys are stored from the Rust backend in the operating system credential store
 (Windows Credential Manager / macOS Keychain). The frontend does not receive the raw key value.
+
+### Custom Provider (beta)
+
+In addition to the nine built-in providers, ECHO v1.3.5 can add user-defined **OpenAI-compatible Chat Completions endpoints** as Custom Providers.
+This is intended for compatible local servers and gateways such as LM Studio, Ollama-compatible OpenAI endpoints, vLLM, Open WebUI, or similar services.
+
+Custom Provider support is currently beta. Official Claude, Gemini, or other provider-specific API formats are not accepted unless exposed through an OpenAI-compatible endpoint.
+Local endpoints may not require an API key; remote services should be configured according to the service operator's security requirements.
 
 ## Languages
 
@@ -78,6 +86,21 @@ ECHO does not create autonomous or repeated AI-to-AI chains.
 - Fluid layout using the full available window width
 - Native fullscreen / normal-window toggle
 - Floating `↑ Top` button for returning to the top of long pages
+
+### Delta Protocol (experimental, opt-in)
+
+ECHO v1.3.5 includes an **experimental Delta Protocol analysis sidecar**. It is disabled by default and does not change normal ECHO sending when switched off.
+
+The experimental workflow operates on already-saved Conversation data:
+
+- translate saved AI responses into a structured intermediate representation (IR);
+- compare structured claims while preserving disagreement and unresolved states;
+- inspect provenance, Relations, Dissent, and Counterpositions;
+- allow a Human to perform explicit final Resolution and retain decision history;
+- choose one currently available model as the Delta processing model for Translator and Comparator work.
+
+Delta analysis does not replace or rewrite the saved Conversation. A failed or partial Delta analysis does not erase the original AI responses.
+The feature is experimental and its interface and storage format may evolve in later releases.
 
 ### Conversation / Observation
 
@@ -206,6 +229,7 @@ Important decisions require checking primary sources and human review.
 - Uninstalling the application may leave credential-store API keys or local application data behind.
 - Restore fully replaces current local data. Export the current state before restoring.
 - ECHO does not fetch live exchange rates. Configure non-USD exchange rates manually.
+- Delta Protocol is experimental. Do not treat Delta analysis output itself as truth or a final decision.
 
 ## Stack
 
@@ -257,9 +281,11 @@ The gate runs:
 
 Keep the generated `src-tauri/Cargo.lock` in the repository.
 
-When all checks pass, the gate creates
-`AI-Ensemble-v1.3.4-OSS-VERIFIED-SOURCE.zip`
-in the project root for final publication audit.
+When all checks pass, the gate uses the current `package.json` version and creates the audit source archive in the project root. For v1.3.5 the filename is:
+
+`AI-Ensemble-ECHO-v1.3.5-OSS-VERIFIED-SOURCE.zip`
+
+This is the formal audit-source filename produced after the Release Gate passes; it is separate from any work-in-progress PUBLIC-CANDIDATE archive name.
 
 To reduce Windows file-lock and long-path problems, Rust artifacts are built under a short path inside
 `%LOCALAPPDATA%\AI-Ensemble-Build\`, Cargo parallelism is limited to one job, and the latest build cache
@@ -313,7 +339,7 @@ not a native iPadOS or Android application.
 - Gradually split the application state hub for maintainability
 - Clarify provider-specific reasoning / state boundaries
 - Strengthen compatibility tests for provider model and API changes
-- Consider local-model and additional-provider support
+- Expand Custom Provider compatibility and local-model interoperability
 - Improve signing, automatic-update, and formal release workflows
 
 ## Contributing / Security
@@ -334,7 +360,7 @@ See also:
 
 Copyright 2026 AI Ensemble contributors.
 
-Licensed under the [Apache License 2.0](LICENSE).
+Licensed under the [Apache License 2.0](LICENSE). See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for the third-party dependency license inventory.
 
 Provider and product names belong to their respective owners.
 AI Ensemble is not affiliated with or endorsed by the named AI providers.

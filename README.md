@@ -1,20 +1,19 @@
-# AI Ensemble — ECHO v1.3.4
+# AI Ensemble — ECHO v1.3.5
 
 **Evaluation, Comparison & Hallucination Observation**
 
-複数AIの回答を比較し、差異・誤認・ハルシネーションを人間が観測・検証するためのデスクトップツールです。AI Ensemble — ECHO自身が「どのAIが正しいか」「どの回答がハルシネーションか」を自動判定するものではありません。
+AI Ensemble — ECHO は、複数のAI回答を並べて、人間が差異・誤認・ハルシネーションの可能性を観察・検証するためのデスクトップツールです。**どのAIが正しいかを自動判定するツールではなく、回答を自動的に「ハルシネーション」と認定するものでもありません。**
 
-複数の生成AIへ同じ質問を送り、回答を並べて比較するWindows / macOS向けデスクトップアプリです。
-開発、調査、文章検討、アイデア比較などで、人間が判断するための補助を目的としています。
+同じ質問を複数の生成AIプロバイダへ送り、回答を横並びで比較できます。開発、調査、文章作成、アイデア検討などにおける人間の判断補助を目的としています。
 
 [English README](README.en.md)
 
-**AI EnsembleはConsensus engineではありません。**
-どのAIが正しいかを自動判定せず、各回答、参照条件、AI間参照の出所を保持します。
+**AI Ensemble はコンセンサス・エンジンではありません。**  
+AIの回答、参照条件、AI間参照の来歴を見える状態に保ち、最終的な評価は人間が行います。
 
-## 対応AI
+## 対応AIプロバイダ
 
-現在、次の9事業者へ実送信できます。
+現在、以下9社の組み込みプロバイダへ送信できます。
 
 - OpenAI / ChatGPT
 - Anthropic / Claude
@@ -26,154 +25,147 @@
 - Cohere
 - xAI / Grok
 
-利用するAIごとに、ご自身のAPIキーが必要です。すべて設定する必要はありません。
-APIキーを保存したAIだけを送信対象として利用できます。
+利用するプロバイダごとに、自分のAPIキーが必要です。すべてを設定する必要はありません。
+APIキーはRustバックエンドからOSの資格情報ストア（Windows Credential Manager / macOS Keychain）へ保存され、フロントエンドへ平文キーを戻しません。
 
-APIキーはRust側からOSのCredential Store（Windows Credential Manager / macOS Keychain）へ保存し、JavaScript側へキー本体を返しません。
+### Custom Provider（β）
 
-## 言語
+v1.3.5では、9社の組み込みプロバイダに加え、**OpenAI互換 Chat Completions API** を持つエンドポイントをCustom Providerとして追加できます。LM Studio、OpenAI互換モードのOllama、vLLM、Open WebUI、その他の互換ゲートウェイなどを想定しています。
 
-- 日本語、英語、簡体字中国語、韓国語に対応
-- 初期値はOSの言語を自動判定（日本語、韓国語、簡体字中国語環境を判定し、それ以外は英語）
-- 設定から「システム設定／日本語／英語／简体中文／한국어」をいつでも切り替え可能
-- 言語設定はバックアップJSONにも保存され、別PCへの復元時に引き継がれます
+Custom Providerはβ機能です。Claude公式APIやGemini公式APIなど、OpenAI互換ではない独自API形式をそのまま登録することはできません。ローカルエンドポイントではAPIキー不要の場合があります。リモートサービスでは各サービスのセキュリティ要件に従ってください。
 
-翻訳対象はアプリのUIです。質問、AI回答、Context、Conversation、利用者が付けた名前などの
-内容は翻訳せず、原文のまま保持します。Providerから返るエラー文も、診断情報を失わないよう
-原文を表示する場合があります。
+## UI言語
 
-簡体字中国語と韓国語で未翻訳の低頻度文言は英語へフォールバックします。今後の追加候補は、
-繁体字中国語、スペイン語、ブラジルポルトガル語です。ヒンディー語は余裕ができた段階で検討します。
+- 日本語 / English / 简体中文 / 한국어
+- 初回起動時にOS言語を検出し、日本語・韓国語・簡体字中国語に該当しない場合は英語を使用
+- Settingsからいつでも切替可能
+- 選択したUI言語はバックアップJSONに含まれ、別PCへの復元時にも引き継がれます
 
+翻訳対象はアプリUIです。質問、AI回答、Context、Conversation、ユーザーが付けた名前などは元の言語を保持します。診断上必要な場合、プロバイダ由来のエラー文を原文のまま表示することがあります。
 
 ## 初回起動と利用上の注意
 
-初回起動時に表示言語を選び、利用上の注意を確認します。開始には「18歳以上」と
-「上記を確認しました」の2項目への確認が必要です。生年月日や年齢そのものは入力・保存しません。
+初回起動時にUI言語を選択し、利用上の注意を確認します。開始には次の両方への確認が必要です。
 
-AIは、自身のモデル名・開発元・参照元を誤認して説明することがあります。
-ECHOでは回答本文中の自己申告より、アプリが保持しているProvider / Model情報を優先して表示し、
-AI回答の前に生成元ラベルを表示します。
+- 「18歳以上です」
+- 「上記の注意事項を確認しました」
 
-AI間のHandoffは、人間の確認を挟む1ホップのみです。連鎖的なAI→AI転送は行いません。
+生年月日や年齢値そのものは保存しません。
+
+AIは、自分自身のモデル名・開発元・プロバイダ・参照元を誤認することがあります。ECHOでは生成文中の自己申告よりも、アプリが保持するProvider / Modelのルーティング情報を優先して表示します。
+
+AI間Handoffは**人間が承認した1ホップのみ**です。自律的・反復的なAI-to-AIチェーンは作成しません。
 
 ## 主な機能
 
 ### 質問と回答比較
 
-- 選択した複数AIへの同時送信とストリーミング表示
-- 送信対象AIのPointerドラッグ（マウス／ペン／タッチ）／左右ボタンによる並べ替えと順序保存
-- AIごとのモデル選択と公式APIからのモデル一覧更新
-- 横スクロール型の送信対象一覧
-- 回答カラムの横幅調整
-- 上下で同期する回答ナビゲーション
-- 通常ウィンドウでも利用可能な横幅全体を使うFluid layout
-- ネイティブ全画面表示と通常表示の切り替え
-- 長い画面を1クリックで最上部へ戻れる「↑ Top」ボタン
+- 選択した複数AIへ並列送信し、ストリーミング表示
+- AIターゲットをポインタ操作または左右ボタンで並べ替え、順序を保存
+- プロバイダごとのモデル選択とモデル一覧取得
+- 横スクロール可能なAIターゲット一覧
+- 回答カラム幅の変更
+- 上下の横スクロールナビゲーション同期
+- ウィンドウ幅を使う可変レイアウト
+- ネイティブ全画面 / 通常ウィンドウ切替
+- 長い画面から戻る `↑ Top` ボタン
+
+### Delta Protocol（実験機能・任意ON）
+
+v1.3.5には、**Delta Protocolの実験的な解析サイドカー**が含まれています。初期状態はOFFで、OFFのままなら従来のECHO送受信動作は変わりません。
+
+Delta解析は、先に保存されたConversationを対象にします。
+
+- 保存済みAI回答を構造化された中間表現（IR）へ変換
+- 主張を比較し、一致だけでなく不一致・未解決状態も保持
+- provenance、Relations、Dissent、Counterpositions等を確認
+- Humanによる明示的な最終Resolutionと履歴保存
+- 現在利用可能なモデルから1つをDelta処理AIとして選択し、Translator / Comparatorに使用
+
+Delta解析はConversationの正本を置き換えたり書き換えたりしません。解析が失敗またはpartialになっても、元のAI回答は保持されます。実験機能のため、将来のリリースでUIや保存形式が変更される可能性があります。
 
 ### Conversation / Observation
 
 - Turn単位のConversation Log
-- 回答の並列比較
-- Turn検索と絞り込み
-- 人間によるObservation marker
-- 最新回答または過去の通常回答から、他AIへの1ホップHandoff
-- AI間参照の出所記録
-- Context Reload boundaryと会話履歴のリセット
+- 並列回答比較
+- Turn検索・フィルタ
+- 人間が付けるObservationマーカー
+- 最新回答または保存済み通常回答から他AIへの1ホップHandoff
+- AI間参照のprovenance記録
+- Context Reload境界と会話履歴リセット
 
-`他AIへ渡す`では元回答全文をReferenceとして送信します。ただし、受信AIが内容を正確に
-読解、引用、反映することまでは保証しません。送信後の回答は人間が確認してください。
+「他AIへ送る」は元回答全文をReferenceとして渡します。ただし、受信側AIがそのReferenceを正確に読み、引用し、従うことをECHOは保証しません。結果は必ず人間が確認してください。
 
 ### Context
 
-- InstructionとReferenceの分離
-- Context Setの作成、複製、切り替え
-- Context LibraryとProject管理
+- InstructionとReferenceを分離
+- Context Setの作成・複製・切替
+- Context Library / Project管理
 - Conversation単位のContext境界
-- AI回答をReferenceとして追加
+- AI回答をReferenceへ追加
 - Context上限の概算と警告
-- Context Reload時の「履歴を保持／境界を作成／履歴をリセット」選択
+- Context Reload時に履歴維持 / 境界作成 / 履歴リセットを選択
 
-Importした会話はArchive候補であり、自動的にContextへ昇格しません。
-Context上限を超える場合も、アプリが内容を自動削除・自動要約することはありません。
+インポートした会話はArchive候補であり、自動的に有効Contextにはなりません。Context上限を超えても、ユーザーの内容を勝手に削除・要約しません。永続Context、Context Set、Context Library、ProjectはSQLiteを正本として扱います。
 
-Persistent Context、Context Sets、Context Library、ProjectsはSQLiteをsource of truthとします。
-
-
-Archiveへ保存しただけではAI送信のContextになりません。外部会話や資料をAIへ渡す場合は、
-ArchiveからContext Libraryへ追加し、ReferenceとしてContext Setへ組み込み、そのSetを対象Conversationで
-有効化します。保管と送信対象を分離することで、Archiveした内容が意図せず外部AIへ送信されるのを防ぎます。
+Archiveに保存しただけではAIへ送信されません。AIへ渡すには、ArchiveからContext Libraryへ追加し、Context SetのReferenceとして設定し、そのSetを対象Conversationで有効化する必要があります。
 
 ### Archive / Import
 
-- Generic JSON / Markdown / Text
+- 一般JSON / Markdown / Text
 - ChatGPT export adapter
 - Claude export adapter
 - Adapter Registry
-- Import内容のArchive確認と、選択した内容だけのContext追加
+- Import内容を確認してから選択した素材をContextへ追加
 
 ### Usage / Cost
 
-- SQLiteによるUsage履歴
-- Provider／モデル別token usage
-- DeepSeekのcache-aware・適用日付き料金推定
-- 各AI事業者の公式Usage／Billing画面へのリンク
-- ローカル推定額と公式請求額の明確な分離
-- 表示通貨をUSD / JPY / EUR / GBP / CNY / KRWから選択可能
-- Provider価格は内部的にUSDで保持し、USD以外は利用者が設定した手動為替レートで表示換算
+- SQLiteベースのUsage履歴
+- Provider / Model別Token使用量
+- DeepSeekのcache-aware・適用日ベース価格推定
+- 各社公式Usage / Billingページへのリンク
+- ローカル推定額と公式請求額を明確に分離
+- 表示通貨: USD / JPY / EUR / GBP / CNY / KRW
+- プロバイダ価格は内部ではUSD基準を保持し、非USD表示はユーザー設定の手動為替レートを使用
 
-Gemini、Qwen、Mistral、Cohere、Grokなど、契約・無料枠・モデル条件をAPI応答だけで
-確定できないProviderについては、請求額のような断定表示を行いません。最終的な使用量、
-無料枠、残高、請求は各事業者の公式画面で確認してください。
+API応答だけでは無料枠・契約プラン・最終請求条件を判断できないプロバイダについて、ECHOは確定請求額として表示しません。最終的な利用量・残高・請求は各プロバイダの公式画面で確認してください。
 
-### データの移行 / バックアップ
+### データ移行 / バックアップ
 
-設定の「対話ログ・個人設定を書き出す」から、Conversation、AI回答、Context、Project、
-Import Archive、Usage、Text Pad、表示設定を1つのJSONファイルへ書き出せます。
-ファイルはOSのダウンロードフォルダへ保存され、Credential Storeに保存したAPIキー、
-キー保存状態、入力途中のキードラフトは含まれません。ただし、会話やContext本文へ利用者が
-入力したAPIキー等の文字列は自動検出・削除されません。
+Settings →「会話ログ / 個人設定をエクスポート」から、Conversation、AI回答、Context、Project、Import Archive、Usage、Text Pad、表示設定を1つのJSONへ保存できます。保存先はOSのDownloadsフォルダです。
 
-書き出したファイルには会話やContextなどの機密情報が含まれる可能性があります。
-第三者へ送信・共有する前に内容と共有先を確認してください。
+エクスポートにはOS資格情報ストアのAPIキー、APIキー保存状態フラグ、入力途中のAPIキードラフトは含まれません。ただしConversationやContext本文にユーザー自身が秘密情報を書いた場合、その文字列をECHOが自動検出・除去することはありません。共有前に内容と送付先を確認してください。
 
-「書き出しファイルから復元」では、v0.15.0以降で作成したJSONを選択して別PCなどへ
-データを移行できます。復元すると、現在のConversation、回答、Context、Project、Archive、
-Usage、Text Pad、個人設定はファイルの内容で全置換されます。実行前に確認画面を表示し、
-処理途中で失敗した場合はSQLiteの変更をロールバックします。
+復元は現在のConversation、回答、Context、Project、Archive、Usage、Text Pad、個人設定をファイル内容で置き換えます。事前に確認ダイアログを表示し、SQLite更新途中で失敗した場合はロールバックします。APIキーは復元対象ではありません。
 
-Credential StoreのAPIキーは書き出し・復元の対象外です。別PCでは各AIのAPIキーを改めて
-設定してください。同じPCで復元する場合、現在保存されているAPIキーは変更されません。
+## データフロー
 
-## データの流れ
+- 質問、有効Context、必要な会話履歴はユーザー端末から選択したAIプロバイダのAPIへ直接送信
+- ECHO運営者の中継サーバーは使用しない
+- APIキーはOS資格情報ストアに保存し、UIへ再表示しない
+- Conversation、Context、Usage履歴は端末ローカルに保存
+- プロバイダ側の保持・学習利用・データ処理は、ユーザーの契約、設定、各社規約に従う
 
-- 質問、有効なContext、必要な会話履歴は、選択したAI事業者の公式APIへ端末から直接送信されます。
-- AI Ensemble独自の中継サーバーや運営者サーバーは使用しません。
-- APIキー本体はOSのCredential Storeへ保存され、アプリ画面へ再表示されません。
-- Conversation、Context、利用履歴などのアプリデータは端末内へ保存されます。
-- 各AI事業者側での保存、学習利用、データ処理は、利用者の契約、プラン、設定、各社規約に従います。
+## 業務利用
 
-## 業務利用時の注意
+所属組織のルールと各AIプロバイダとの契約・データ設定に従ってください。外部AIサービスで処理してよい情報だけを入力してください。個人情報や機密情報は必要最小限にし、必要に応じて匿名化・マスキングを検討してください。
 
-所属組織の規程と各AI事業者との契約・データ設定を確認し、外部AIでの処理が許可された
-範囲で入力してください。個人情報や機密情報を扱う場合は、目的に必要な範囲へ絞り、
-匿名化・マスキングを推奨します。
-
-生成内容は誤りや推測を含む場合があります。重要な判断には原資料の確認と人によるレビューが必要です。
+生成内容には誤りや推測が含まれる可能性があります。重要な判断では一次情報と人間の確認が必要です。
 
 ## 現在の制限
 
-- 個人開発のソフトウェアであり、動作、生成内容、外部AIの継続提供を保証するものではありません。
-- AI事業者によるモデル変更や提供終了により、一時的に送信できなくなる場合があります。
-- あるAIの失敗は、他のAIへの送信を停止しません。
-- GrokはAPIキーを設定できますが、通常はプリペイド残高または請求権限が必要です。
-- CohereのEvaluation Keyは評価・試用向けです。本番業務では契約条件を確認してください。
-- 自動アップデート機能はありません。新しい版は手動でインストールしてください。
-- 為替レートの自動取得は行いません。USD以外の換算レートは利用者が手動で設定してください。
-- アンインストール後もCredential StoreのAPIキーや端末内データが残る場合があります。
-- 復元は現在データを全置換します。実行前に現在のデータも書き出してください。
+- 独立開発ソフトウェアであり、動作、生成内容、外部AIサービスの継続提供を保証しません
+- プロバイダ側のモデル変更・提供終了で一時的に送信できなくなる場合があります
+- 1社の送信失敗は他社への送信を停止しません
+- GrokはAPIキーを設定できても、一般に残高または課金設定が必要です
+- Cohere Evaluation Keyは評価・試用用途を前提とするため、本番利用では契約条件を確認してください
+- 自動アップデーターはありません。新バージョンは手動でインストールします
+- アンインストール後もOS資格情報ストアのAPIキーやローカルデータが残る場合があります
+- Restoreは現在データを置き換えます。事前にExportしてください
+- 為替レートは自動取得しません。非USD表示は手動設定です
+- Delta Protocolは実験機能です。解析結果そのものを真実・最終結論として扱わないでください
 
-## Stack
+## 技術スタック
 
 - Tauri 2
 - React
@@ -181,9 +173,9 @@ Credential StoreのAPIキーは書き出し・復元の対象外です。別PC�
 - Rust
 - SQLite
 
-## Development
+## 開発
 
-必要環境：Node.js 20以上、npm、stable Rust toolchain、Tauri 2のWindows向け前提環境。
+必要環境: Node.js 20+、npm、stable Rust toolchain、Tauri 2のWindows前提環境。
 
 ```bash
 npm ci
@@ -191,56 +183,37 @@ npm run verify
 npm run tauri:dev
 ```
 
-Windows向けインストーラを作成する場合：
+Windowsインストーラ:
 
 ```bash
 npm run tauri:build
 ```
 
-このコマンドはNSISのみを生成します。Rustのビルド元パスを匿名化し、release symbolを
-除去したうえで、完成したexeにユーザー情報、既知のAPIキーパターン、Console subsystemが
-残っていないか自動検査します。検査に失敗した場合は配布しないでください。
+このコマンドはNSISインストーラを生成します。Release pipelineではRustビルドパスの匿名化、release symbolのstrip、最終exe内のユーザー情報・既知APIキーパターン・意図しないConsole subsystemを検査します。検証に失敗したbuildは配布しないでください。
 
-通常の生成先：
+典型的な出力先:
 
 ```text
 src-tauri/target/release/bundle/nsis/
 ```
 
-OSS公開前の一括検査は、Windowsで `RUN_OSS_RELEASE_CHECK.bat` をダブルクリックしてください。
-フロント検査、依存監査、`Cargo.lock` 生成、Rust自動整形・test・Clippy、NSISビルドと
-完成exeの検査を順番に実行します。生成された `src-tauri/Cargo.lock` はリポジトリへ含めます。
-依存監査はproductionのhigh以上と、全依存のcriticalを停止条件にします。開発専用依存の
-moderate/high警告も表示されるため、公開前に内容を確認してください。
-全工程が通ると、最終監査へ返すための `AI-Ensemble-v1.3.4-OSS-VERIFIED-SOURCE.zip` も
-プロジェクト直下へ生成されます。
-一括検査ではWindowsのファイルロックと長いパスを避けるため、Rust生成物を
-`%LOCALAPPDATA%\AI-Ensemble-Build\` 以下の短いフォルダへ出し、並列ビルド数を1に
-制限します。再実行時は直近のビルドキャッシュを再利用します。検査済みインストーラは
-プロジェクト直下の `release-output` へコピーされます。
+OSS公開前にはWindowsで `RUN_OSS_RELEASE_CHECK.bat` を実行します。frontend verification、dependency audit、`Cargo.lock`、Rust format/test/Clippy、NSIS build、exe inspectionを実行します。
 
-Windows実機の `typecheck / build / tauri:dev` と、生成されたインストーラでの起動確認を
-最終確認環境とします。
+Release Gateが成功すると、その時点の `package.json` のバージョンを使って、プロジェクトルートへ監査用ソースZIPを生成します。v1.3.5では次の名前です。
 
-### macOS試用版
-
-Macを持っていなくても、GitHub Actionsの `Build macOS Trial` を手動実行すれば、
-Apple Silicon版とIntel版のDMGを作成できます。GitHubのActions画面で対象workflowを開き、
-`Run workflow` を実行してください。完了後、Artifactsから該当CPU版をダウンロードします。
-
-ローカルのMacで作成する場合：
-
-```bash
-npm run tauri:build
+```text
+AI-Ensemble-ECHO-v1.3.5-OSS-VERIFIED-SOURCE.zip
 ```
 
-macOSでは `.app` と `.dmg` を生成します。試用版はad-hoc署名で、Appleの公証は行いません。
-初回起動時にmacOSがブロックした場合は、「システム設定」→「プライバシーとセキュリティ」から
-利用者自身で起動を許可してください。正式配布にはApple Developer ID署名と公証が必要です。
+このファイル名はRelease Gate通過後の正式な監査用ソースアーカイブ名です。作業中のPUBLIC-CANDIDATE ZIP名とは別です。
 
-画面幅1024px以下ではサイドバーをオーバーレイ化し、AI選択・回答カラムを横スワイプできる
-タブレット幅レイアウトへ切り替えます。現時点ではmacOSアプリの狭幅・タッチ操作対応であり、
-iPadOS / Androidのネイティブ版ではありません。
+最終検証はWindows実機でtypecheck / build / `tauri:dev` を通した後、新規生成したinstallerを実際にインストールして起動確認します。
+
+### macOS試験ビルド
+
+GitHub Actionsの `Build macOS Trial` workflow、またはMac上の `npm run tauri:build` で `.app` / `.dmg` を生成できます。試験buildはad-hoc signingで、Apple notarization済みではありません。正式配布にはDeveloper ID署名とnotarizationが必要です。
+
+1024px以下ではsidebarをoverlay化し、AI選択 / 回答カラムを横スワイプできます。これは狭幅・タッチ対応のmacOSアプリ挙動であり、native iPadOS / Androidアプリではありません。
 
 ## Design boundaries
 
@@ -252,27 +225,33 @@ iPadOS / Androidのネイティブ版ではありません。
 - Reference sent ≠ Reference followed
 - AI-Referenced Observation ≠ Independent Observation
 
-## Next candidates
+## 次の候補
 
-- 簡体字中国語・韓国語の翻訳レビューと、繁体字中国語などの追加言語
-- Android版に向けたCredential Store、ファイル入出力、画面構成のモバイル抽象化
+- 简体中文 / 한국어の継続レビューと、繁體中文・スペイン語・ブラジルポルトガル語等の検討
+- Android向けcredential storage / file I/O / layoutの抽象化
 - iOS版（Mac / Xcode / Apple署名環境が必要）
-- App state-hubの段階的な分割と保守性改善
-- Provider固有のreasoning／state境界の整理
-- 公式モデル変更に対する互換性テストの強化
-- ローカルモデル／追加Providerの検討
-- 署名、自動アップデート、正式配布フローの検討
+- アプリ状態ハブの段階的分割
+- Provider固有reasoning / state境界の明確化
+- Provider model / API変更に対する互換性テスト強化
+- Custom Provider互換性とローカルモデル連携の拡張
+- 署名・自動更新・正式release workflowの改善
 
 ## Contributing / Security
 
-開発へ参加する場合は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。脆弱性や認証情報に関わる問題は公開Issueへ書かず、[SECURITY.md](SECURITY.md) の非公開報告手順を使ってください。
+Contribution前に [CONTRIBUTING.md](CONTRIBUTING.md) を確認してください。
+脆弱性や資格情報関連の問題は公開Issueに書かず、[SECURITY.md](SECURITY.md) のprivate reporting手順を利用してください。
 
-変更履歴は [CHANGELOG.md](CHANGELOG.md)、今後の方向性は [ROADMAP.md](ROADMAP.md) にあります。
-料金概算の根拠と確認日は [PRICING_SOURCES.md](PRICING_SOURCES.md) に記録しています。
-公開タグを作る前に [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) の全項目を確認してください。
+関連文書:
 
-## License
+- [CHANGELOG.md](CHANGELOG.md)
+- [ROADMAP.md](ROADMAP.md)
+- [PRICING_SOURCES.md](PRICING_SOURCES.md)
+- [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)
+
+## ライセンス
 
 Copyright 2026 AI Ensemble contributors.
 
-Apache License 2.0で公開します。全文は [LICENSE](LICENSE) を参照してください。AI事業者名・製品名は各権利者に帰属し、AI Ensembleはいずれの事業者からも承認・後援を受けたプロジェクトではありません。詳しくは [TRADEMARKS.md](TRADEMARKS.md) を参照してください。
+[Apache License 2.0](LICENSE) に基づき公開します。第三者依存関係のライセンス一覧は [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) を参照してください。
+
+各プロバイダ名・製品名の権利はそれぞれの権利者に帰属します。AI Ensembleは記載されたAIプロバイダと提携・承認関係にありません。詳細は [TRADEMARKS.md](TRADEMARKS.md) を参照してください。

@@ -36,6 +36,19 @@ function newRequestId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+// [Phase CP-1 MVP] Custom Provider(customOpenAIProvider.ts)が同じstream-token
+// イベント購読・pendingStreamsマップに相乗りするための薄いエクスポート。
+// ensureListenerは内部でメモ化済みのため、複数箇所から呼んでも二重登録しない。
+export function __ensureStreamListenerForCustomProvider() {
+  return ensureListener();
+}
+export function __registerPendingStream(requestId: string, onToken: (token: string) => void) {
+  pendingStreams.set(requestId, onToken);
+}
+export function __unregisterPendingStream(requestId: string) {
+  pendingStreams.delete(requestId);
+}
+
 export class TauriProvider implements AIProvider {
   readonly id: ProviderId;
   readonly name: string;
@@ -85,7 +98,9 @@ export class TauriProvider implements AIProvider {
     onToken: (token: string) => void
   ): Promise<ChatResponse> {
     await ensureListener();
-    const requestId = newRequestId();
+    // [Phase 1継続 項目3/4] orchestrator.tsがrequestIdを発行している場合はそれを使う。
+    // UIの個別停止ボタンが参照するIDと、Rust側stream_runsのPKを一致させるため。
+    const requestId = request.requestId ?? newRequestId();
     pendingStreams.set(requestId, onToken);
 
     try {
@@ -104,6 +119,8 @@ export class TauriProvider implements AIProvider {
         maxTokens: request.maxOutputTokens,
         temperature: request.temperature,
         apiMode: request.model.capabilities.preferredApiMode,
+        conversationId: request.conversationId,
+        slotId: request.slotId,
       });
       return {
         content: res.content,
@@ -121,17 +138,25 @@ export class TauriProvider implements AIProvider {
   }
 }
 
-// --- APIキー管理 (Rust側keyringを呼ぶだけ。キー本体はJSに一切戻ってこない) ---
+// [Phase 1継続 項目3/4] このAIだけ停止。Rust側のCancellationTokenをcancelさせる。
+export async function cancelActiveStream(requestId: string): Promise<void> {
+  await invoke("cancel_stream_run", { requestId });
+}
 
-export async function saveApiKey(provider: ProviderId, key: string): Promise<void> {
+// --- APIキー管理 (Rust側keyringを呼ぶだけ。キー本体はJSに一切戻ってこない) ---
+// [Phase CP-1 MVP] 引数型をProviderId→stringへ拡張。Rust側keychain.rsは元々
+// 文字列ベースで固定enumに依存していないため、Custom Providerのキー保存にも
+// そのまま再利用できる(既存9社の呼び出しはProviderId⊂stringなので影響なし)。
+
+export async function saveApiKey(provider: string, key: string): Promise<void> {
   await invoke("save_api_key", { provider, key });
 }
 
-export async function hasApiKey(provider: ProviderId): Promise<boolean> {
+export async function hasApiKey(provider: string): Promise<boolean> {
   return invoke<boolean>("has_api_key", { provider });
 }
 
-export async function deleteApiKey(provider: ProviderId): Promise<void> {
+export async function deleteApiKey(provider: string): Promise<void> {
   await invoke("delete_api_key", { provider });
 }
 

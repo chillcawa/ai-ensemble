@@ -1,5 +1,6 @@
 import { useRef, useState, type ChangeEvent } from "react";
 import type { AIModel, ProviderId } from "../types/ai";
+import { normalizeCustomProviderBaseUrl, type CustomProviderConfig } from "../types/customProvider";
 import type { DisplayCurrency, ProviderSlot, ThemeMode, UsageSummary } from "../types/app";
 import { ConfirmModal } from "./ConfirmModal";
 import { UsageDashboard } from "./UsageDashboard";
@@ -10,6 +11,11 @@ import { PROVIDER_REGISTRY, providerDefinition } from "../providers/registry";
 import { APP_VERSION } from "../version";
 import { parseUserDataExport, type UserDataExportFile } from "../data/userDataTransfer";
 import { NATIVE_LANGUAGE_LABELS, useI18n, type AppLocale } from "../i18n";
+
+const CUSTOM_PROVIDER_PRESETS = [
+  { label: "LM Studio", name: "LM Studio Local", baseUrl: "http://127.0.0.1:1234/v1" },
+  { label: "Ollama", name: "Ollama Local", baseUrl: "http://127.0.0.1:11434/v1" },
+] as const;
 
 export function SettingsPanel({
   slots,
@@ -39,6 +45,12 @@ export function SettingsPanel({
   onOpenTrialNotice,
   onExportData,
   onImportData,
+  customProviders,
+  onAddCustomProvider,
+  onUpdateCustomProvider,
+  onRemoveCustomProvider,
+  onSaveCustomProviderKey,
+  onDeleteCustomProviderKey,
 }: {
   slots: ProviderSlot[];
   theme: ThemeMode;
@@ -67,10 +79,24 @@ export function SettingsPanel({
   onOpenTrialNotice: () => void;
   onExportData: () => Promise<string>;
   onImportData: (payload: UserDataExportFile) => Promise<void>;
+  /** [Phase CP-1 MVP] Custom Provider(ユーザー追加のOpenAI互換エンドポイント) */
+  customProviders: CustomProviderConfig[];
+  onAddCustomProvider: (input: { name: string; baseUrl: string; model: string }) => string;
+  onUpdateCustomProvider: (id: string, patch: Partial<CustomProviderConfig>) => void;
+  onRemoveCustomProvider: (id: string) => Promise<void>;
+  onSaveCustomProviderKey: (config: CustomProviderConfig) => Promise<void>;
+  onDeleteCustomProviderKey: (config: CustomProviderConfig) => Promise<void>;
 }) {
   const { locale, setLocale, t } = useI18n();
   const [confirmSlot, setConfirmSlot] = useState<ProviderSlot | null>(null);
   const [confirmUsageClear, setConfirmUsageClear] = useState(false);
+  const [confirmCustomProviderRemove, setConfirmCustomProviderRemove] = useState<CustomProviderConfig | null>(null);
+  const [newCustomProviderName, setNewCustomProviderName] = useState("");
+  const [newCustomProviderBaseUrl, setNewCustomProviderBaseUrl] = useState("");
+  const [newCustomProviderModel, setNewCustomProviderModel] = useState("");
+  const [newCustomProviderKeyDraft, setNewCustomProviderKeyDraft] = useState("");
+  const [customProviderAddBusy, setCustomProviderAddBusy] = useState(false);
+  const [customProviderAddError, setCustomProviderAddError] = useState<string | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportPath, setExportPath] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -105,6 +131,32 @@ export function SettingsPanel({
       setImportCandidate({ fileName: file.name, payload: parseUserDataExport(await file.text()) });
     } catch (err) {
       setImportError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleAddCustomProvider() {
+    const baseUrl = normalizeCustomProviderBaseUrl(newCustomProviderBaseUrl);
+    const model = newCustomProviderModel.trim();
+    if (!baseUrl || !model || customProviderAddBusy) return;
+    setCustomProviderAddBusy(true);
+    setCustomProviderAddError(null);
+    try {
+      const name = newCustomProviderName.trim() || "Custom Provider";
+      const id = onAddCustomProvider({ name, baseUrl, model });
+      const keyDraft = newCustomProviderKeyDraft.trim();
+      if (keyDraft) {
+        await onSaveCustomProviderKey({
+          id, name, baseUrl, model, enabled: true, keySaved: false, keyDraft,
+        });
+      }
+      setNewCustomProviderName("");
+      setNewCustomProviderBaseUrl("");
+      setNewCustomProviderModel("");
+      setNewCustomProviderKeyDraft("");
+    } catch (err) {
+      setCustomProviderAddError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCustomProviderAddBusy(false);
     }
   }
 
@@ -216,6 +268,121 @@ export function SettingsPanel({
       </div>
 
       <div className="settings-section">
+        <h3>{t("Custom Provider（β）")}</h3>
+        <small>{t("OpenAI互換APIのエンドポイントを追加できます。")}</small>
+        <small>{t("例：LM Studio / Ollama / OpenRouter / DeepInfra / Together AI など")}</small>
+        <small>{t("API形式：OpenAI互換のみ（β）")}</small>
+        <small>{t("※ Claude公式API、Gemini公式APIなど、OpenAI互換でないAPI形式は現在未対応です。")}</small>
+        <small>{t("※ Claude等を追加したい場合は、OpenRouterなどのOpenAI互換ゲートウェイ経由で利用してください。")}</small>
+        <small>{t("APIキーは不要な場合は空欄のままでかまいません。")}</small>
+        <small>{t("Base URLは /v1 までを入力してください。/chat/completions まで貼った場合は保存時に自動補正します。")}</small>
+        <small>{t("保存するとメイン画面の送信対象AIに表示されます。")}</small>
+        {customProviders.map((config) => (
+          <div className="settings-row custom-provider-row" key={config.id}>
+            <div className="custom-provider-fields">
+              <label className="custom-provider-field">
+                <span>{t("表示名")}</span>
+                <input
+                  placeholder={t("表示名")}
+                  value={config.name}
+                  onChange={(e) => onUpdateCustomProvider(config.id, { name: e.target.value })}
+                />
+              </label>
+              <label className="custom-provider-field">
+                <span>Base URL</span>
+                <input
+                  placeholder="http://127.0.0.1:1234/v1"
+                  value={config.baseUrl}
+                  onChange={(e) => onUpdateCustomProvider(config.id, { baseUrl: e.target.value })}
+                  onBlur={(e) => onUpdateCustomProvider(config.id, { baseUrl: normalizeCustomProviderBaseUrl(e.target.value) })}
+                />
+              </label>
+              <label className="custom-provider-field">
+                <span>{t("モデル名")}</span>
+                <input
+                  placeholder="google/gemma-4-e4b"
+                  value={config.model}
+                  onChange={(e) => onUpdateCustomProvider(config.id, { model: e.target.value })}
+                />
+              </label>
+              <label className="custom-provider-enabled-toggle">
+                <input
+                  type="checkbox"
+                  checked={config.enabled}
+                  onChange={(e) => onUpdateCustomProvider(config.id, { enabled: e.target.checked })}
+                />
+                {t("有効")}
+              </label>
+            </div>
+            {config.keySaved ? (
+              <div className="key-row settings-key-row">
+                <span className="saved">{t("✓ キー保存済み")}</span>
+                <button className="secondary-button" onClick={() => void onDeleteCustomProviderKey(config)}>{t("削除")}</button>
+              </div>
+            ) : (
+              <div className="key-row settings-key-row custom-provider-key-row">
+                <input
+                  type="password"
+                  placeholder={t("APIキー（任意 / ローカルなら空欄）")}
+                  value={config.keyDraft}
+                  onChange={(e) => onUpdateCustomProvider(config.id, { keyDraft: e.target.value })}
+                />
+                <button onClick={() => void onSaveCustomProviderKey(config)} disabled={!config.keyDraft.trim()}>{t("保存")}</button>
+              </div>
+            )}
+            <button className="secondary-button danger-soft" onClick={() => setConfirmCustomProviderRemove(config)}>{t("このProviderを削除")}</button>
+          </div>
+        ))}
+        <div className="custom-provider-presets" role="group" aria-label="Custom Provider presets">
+          <span>{t("プリセット")}</span>
+          {CUSTOM_PROVIDER_PRESETS.map((preset) => (
+            <button
+              type="button"
+              className="secondary-button"
+              key={preset.label}
+              onClick={() => {
+                setNewCustomProviderName(preset.name);
+                setNewCustomProviderBaseUrl(preset.baseUrl);
+              }}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+        <div className="settings-row custom-provider-add-row">
+          <label className="custom-provider-field">
+            <span>{t("表示名")}</span>
+            <input placeholder={t("表示名（例: My Local Qwen）")} value={newCustomProviderName} onChange={(e) => setNewCustomProviderName(e.target.value)} />
+          </label>
+          <label className="custom-provider-field">
+            <span>Base URL</span>
+            <input
+              placeholder="http://127.0.0.1:1234/v1"
+              value={newCustomProviderBaseUrl}
+              onChange={(e) => setNewCustomProviderBaseUrl(e.target.value)}
+              onBlur={(e) => setNewCustomProviderBaseUrl(normalizeCustomProviderBaseUrl(e.target.value))}
+            />
+          </label>
+          <label className="custom-provider-field">
+            <span>{t("モデル名")}</span>
+            <input placeholder="google/gemma-4-e4b" value={newCustomProviderModel} onChange={(e) => setNewCustomProviderModel(e.target.value)} />
+          </label>
+          <label className="custom-provider-field">
+            <span>{t("APIキー（任意）")}</span>
+            <input type="password" placeholder={t("ローカルAIなら空欄でOK")} value={newCustomProviderKeyDraft} onChange={(e) => setNewCustomProviderKeyDraft(e.target.value)} />
+          </label>
+          <button
+            disabled={customProviderAddBusy || !normalizeCustomProviderBaseUrl(newCustomProviderBaseUrl) || !newCustomProviderModel.trim()}
+            onClick={() => void handleAddCustomProvider()}
+          >
+            {customProviderAddBusy ? t("追加中…") : t("追加")}
+          </button>
+        </div>
+        {customProviderAddError && <small className="error">{t("Custom Providerの追加に失敗しました")}: {customProviderAddError}</small>}
+        <small>{t("MVP版：OpenAI互換のChat Completions形式のみ対応。モデル一覧の自動取得やOllama専用API対応は今後のアップデートで追加予定です。")}</small>
+      </div>
+
+      <div className="settings-section">
         <h3>{t("表示通貨")}</h3>
         <div className="settings-row">
           <label>{t("通貨")}</label>
@@ -269,7 +436,7 @@ export function SettingsPanel({
               </select>
               <div className="settings-model-capabilities">
                 {capabilityBadges(slot.model).map((badge) => (
-                  <span key={badge.label} className={`capability-badge ${badge.tone}`}>{badge.label}</span>
+                  <span key={badge.label} className={`capability-badge ${badge.tone}`} title={badge.title ? t(badge.title) : undefined}>{t(badge.label)}</span>
                 ))}
                 <small>{t("情報源")}: {slot.model.capabilities.source}</small>
               </div>
@@ -397,6 +564,17 @@ export function SettingsPanel({
           const slot = confirmSlot;
           setConfirmSlot(null);
           if (slot) void onDeleteKey(slot);
+        }}
+      />
+      <ConfirmModal
+        open={confirmCustomProviderRemove !== null}
+        title={t("Custom Providerを削除")}
+        message={t("削除しますか？{name}のAPIキーもOS Credential Storeから削除されます。", { name: confirmCustomProviderRemove?.name ?? "" })}
+        onCancel={() => setConfirmCustomProviderRemove(null)}
+        onConfirm={() => {
+          const config = confirmCustomProviderRemove;
+          setConfirmCustomProviderRemove(null);
+          if (config) void onRemoveCustomProvider(config.id);
         }}
       />
       <ConfirmModal

@@ -232,8 +232,10 @@ export function ContextPanel({
               <>
                 <SafeInstructionEditor
                   editorKey="global"
-                  label="Global Instruction"
+                  label={t("Global Instruction / 全プロジェクト共有の共通指示")}
                   badge={t("Set外 / 全AI")}
+                  description={t("ここに書いた内容は、全プロジェクトで共有され、各AIへの送信時に共通指示として追加されます。")}
+                  warning={t("※ APIキーや個人情報などの秘密情報は入力しないでください。")}
                   committedValue={instructionValue(items, sets, selectedSet, "global")}
                   placeholder={t("すべてのAIに共通して適用する指示")}
                   onCommit={(content) => onSetInstruction("global", content)}
@@ -383,10 +385,12 @@ function UnsavedContextModal({ open, dirtyCount, onSaveAll, onDiscard, onBack }:
   );
 }
 
-function SafeInstructionEditor({ editorKey, label, badge, committedValue, placeholder, onCommit, onDirtyChange, onRegisterSave, onUnregister, onDraftChange }: {
+function SafeInstructionEditor({ editorKey, label, badge, description, warning, committedValue, placeholder, onCommit, onDirtyChange, onRegisterSave, onUnregister, onDraftChange }: {
   editorKey: string;
   label: string;
   badge: string;
+  description?: string;
+  warning?: string;
   committedValue: string;
   placeholder: string;
   onCommit: (content: string) => void;
@@ -464,6 +468,8 @@ function SafeInstructionEditor({ editorKey, label, badge, committedValue, placeh
         <label>{label} <span className="context-badge">{badge}</span></label>
         <span className={dirty ? "context-edit-status dirty" : "context-edit-status"}>{t(dirty ? "未保存の変更" : "保存済み")}</span>
       </div>
+      {description && <small className="context-editor-description">{description}</small>}
+      {warning && <small className="context-editor-warning">{warning}</small>}
       <textarea
         value={draft}
         onChange={(e) => setDraft(e.target.value)}

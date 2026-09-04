@@ -159,6 +159,37 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
         );
         CREATE INDEX IF NOT EXISTS idx_import_archive_messages_archive_position
             ON import_archive_messages(archive_id, position);
+
+        -- [Phase 1継続] ストリーミング応答の永続化。
+        -- アプリがクラッシュ/強制終了した場合でも、途中まで届いていた応答を
+        -- 復元できるようにするためのテーブル。
+        CREATE TABLE IF NOT EXISTS stream_runs (
+            request_id TEXT PRIMARY KEY,
+            conversation_id TEXT,
+            slot_id TEXT,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'streaming'
+                CHECK (status IN ('streaming', 'completed', 'failed', 'interrupted', 'cancelled')),
+            started_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            final_content TEXT,
+            error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_stream_runs_status ON stream_runs(status);
+        CREATE INDEX IF NOT EXISTS idx_stream_runs_conversation ON stream_runs(conversation_id);
+
+        CREATE TABLE IF NOT EXISTS response_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            text_delta TEXT NOT NULL,
+            received_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY(request_id) REFERENCES stream_runs(request_id) ON DELETE CASCADE,
+            UNIQUE(request_id, sequence)
+        );
+        CREATE INDEX IF NOT EXISTS idx_response_chunks_request
+            ON response_chunks(request_id, sequence);
         "#,
     )
     .map_err(|e| format!("failed to initialize SQLite schema: {e}"))?;
@@ -1347,5 +1378,189 @@ pub fn delete_archive_conversation(app: &AppHandle, archive_id: &str) -> Result<
         params![archive_id],
     )
     .map_err(|e| format!("failed to delete archive: {e}"))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// [Phase 1継続] stream_runs / response_chunks
+//
+// 目的: アプリがクラッシュ・強制終了した場合でも、ストリーミング途中の
+// 応答を復元できるようにする。1AIの停止が他AIの完了結果を巻き込まない
+// (Phase 1前半で対応済み)ことに加え、"アプリ自体"が落ちた場合の対策。
+// ---------------------------------------------------------------------------
+
+/// stream開始時に呼ぶ。conversation_id/slot_idはUIから紐づく文脈が無い場合はNoneでよい
+/// (例: コスト見積り等、会話に属さない一時的な送信)。
+pub fn start_stream_run(
+    app: &AppHandle,
+    request_id: &str,
+    conversation_id: Option<&str>,
+    slot_id: Option<&str>,
+    provider: &str,
+    model: &str,
+) -> Result<(), String> {
+    let conn = open(app)?;
+    conn.execute(
+        "INSERT INTO stream_runs (request_id, conversation_id, slot_id, provider, model, status) VALUES (?1, ?2, ?3, ?4, ?5, 'streaming')
+         ON CONFLICT(request_id) DO NOTHING",
+        params![request_id, conversation_id, slot_id, provider, model],
+    )
+    .map_err(|e| format!("failed to start stream run: {e}"))?;
+    Ok(())
+}
+
+/// ストリーミング中のチャンクを1件、即座に永続化する。
+/// 各providerのstream()実装内、トークンemitと同じ箇所から呼ばれる。
+/// [査読反映] 空文字のtext_deltaは保存しない(復元ログに無意味なレコードを積まないため)。
+pub fn append_response_chunk(
+    app: &AppHandle,
+    request_id: &str,
+    sequence: i64,
+    text_delta: &str,
+) -> Result<(), String> {
+    if text_delta.is_empty() {
+        return Ok(());
+    }
+    let conn = open(app)?;
+    conn.execute(
+        "INSERT INTO response_chunks (request_id, sequence, text_delta) VALUES (?1, ?2, ?3)",
+        params![request_id, sequence, text_delta],
+    )
+    .map_err(|e| format!("failed to append response chunk: {e}"))?;
+    conn.execute(
+        "UPDATE stream_runs SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE request_id = ?1",
+        params![request_id],
+    )
+    .map_err(|e| format!("failed to touch stream run: {e}"))?;
+    Ok(())
+}
+
+/// stream正常完了時に呼ぶ。
+pub fn complete_stream_run(
+    app: &AppHandle,
+    request_id: &str,
+    final_content: &str,
+) -> Result<(), String> {
+    let conn = open(app)?;
+    conn.execute(
+        "UPDATE stream_runs SET status = 'completed', final_content = ?2, updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE request_id = ?1",
+        params![request_id, final_content],
+    )
+    .map_err(|e| format!("failed to complete stream run: {e}"))?;
+    Ok(())
+}
+
+/// stream失敗時(プロバイダエラー等)に呼ぶ。
+pub fn fail_stream_run(app: &AppHandle, request_id: &str, error: &str) -> Result<(), String> {
+    let conn = open(app)?;
+    conn.execute(
+        "UPDATE stream_runs SET status = 'failed', error = ?2, updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE request_id = ?1",
+        params![request_id, error],
+    )
+    .map_err(|e| format!("failed to mark stream run failed: {e}"))?;
+    Ok(())
+}
+
+/// [Phase 1継続 項目4] ユーザーが「このAIだけ停止」を押してキャンセルされた場合に呼ぶ。
+/// failed(エラー)とは意味的に区別する(ユーザー起因の中断であり、プロバイダ側の障害ではない)。
+pub fn mark_stream_run_cancelled(app: &AppHandle, request_id: &str) -> Result<(), String> {
+    let conn = open(app)?;
+    conn.execute(
+        "UPDATE stream_runs SET status = 'cancelled', error = 'cancelled by user', updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE request_id = ?1",
+        params![request_id],
+    )
+    .map_err(|e| format!("failed to mark stream run cancelled: {e}"))?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InterruptedStreamRun {
+    pub request_id: String,
+    pub conversation_id: Option<String>,
+    pub slot_id: Option<String>,
+    pub provider: String,
+    pub model: String,
+    pub started_at: String,
+    pub updated_at: String,
+    /// response_chunksから復元した部分応答テキスト(sequence順に結合)。
+    pub reconstructed_content: String,
+}
+
+/// アプリ起動時に呼ぶ。status='streaming'のまま残っているrun
+/// (=前回セッションがこのrunの完了/失敗を記録する前に終了した)を全件返す。
+/// [査読反映] conversation_idが設定されているrunは、その会話がまだ存在する
+/// ものだけを返す(削除済み会話への復元でappendConversationMessageが
+/// 毎回失敗し続けるのを防ぐ)。conversation_id IS NULLの一時run
+/// (コスト見積り等)はそのまま対象に含める。
+pub fn list_interrupted_stream_runs(app: &AppHandle) -> Result<Vec<InterruptedStreamRun>, String> {
+    let conn = open(app)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT sr.request_id, sr.conversation_id, sr.slot_id, sr.provider, sr.model, sr.started_at, sr.updated_at
+             FROM stream_runs sr
+             WHERE sr.status = 'streaming'
+               AND (sr.conversation_id IS NULL OR EXISTS (
+                     SELECT 1 FROM conversations c WHERE c.id = sr.conversation_id
+                   ))
+             ORDER BY sr.started_at ASC",
+        )
+        .map_err(|e| format!("failed to prepare interrupted stream run query: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })
+        .map_err(|e| format!("failed to list interrupted stream runs: {e}"))?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        let (request_id, conversation_id, slot_id, provider, model, started_at, updated_at) =
+            row.map_err(|e| format!("failed to read interrupted stream run row: {e}"))?;
+
+        let mut chunk_stmt = conn
+            .prepare(
+                "SELECT text_delta FROM response_chunks WHERE request_id = ?1 ORDER BY sequence ASC",
+            )
+            .map_err(|e| format!("failed to prepare response chunk query: {e}"))?;
+        let chunk_rows = chunk_stmt
+            .query_map(params![request_id], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("failed to read response chunks: {e}"))?;
+        let mut reconstructed_content = String::new();
+        for chunk in chunk_rows {
+            reconstructed_content
+                .push_str(&chunk.map_err(|e| format!("failed to collect response chunk: {e}"))?);
+        }
+
+        result.push(InterruptedStreamRun {
+            request_id,
+            conversation_id,
+            slot_id,
+            provider,
+            model,
+            started_at,
+            updated_at,
+            reconstructed_content,
+        });
+    }
+    Ok(result)
+}
+
+/// 復元処理(会話へのメッセージ挿入等)がUI側で完了した後に呼ぶ。
+/// 'streaming'からのみ遷移させ、その間に本当に完了/失敗していたrunを誤って
+/// 上書きしないようにする(WHERE status='streaming'による保護)。
+pub fn mark_stream_run_recovered(app: &AppHandle, request_id: &str) -> Result<(), String> {
+    let conn = open(app)?;
+    conn.execute(
+        "UPDATE stream_runs SET status = 'interrupted', updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE request_id = ?1 AND status = 'streaming'",
+        params![request_id],
+    )
+    .map_err(|e| format!("failed to mark stream run recovered: {e}"))?;
     Ok(())
 }

@@ -1,5 +1,5 @@
 // AI Ensemble — Provider Interface (v0.1)
-// チャッピー案 + クラウ補足(capabilities先入れ)を反映した最小型定義。
+// 初期案とレビューを反映した、差し替え可能なProvider向けの最小型定義。
 // ここが「AIを差し替え可能にする」ためのコアコントラクト。
 // OpenAI/Anthropic固有の実装詳細は、この型の外(Adapter内部)に閉じ込める。
 
@@ -42,7 +42,10 @@ export interface ModelCapabilities {
 
 export interface AIModel {
   id: string; // provider固有のモデルID (例: "gpt-4o", "claude-sonnet-4-6")
-  provider: ProviderId;
+  // [Phase CP-1 MVP] Custom Providerを許容するためProviderIdからstringへ拡張。
+  // ProviderIdはstringのサブタイプなので既存9社の利用箇所には影響しない
+  // (`m.provider === slot.key`等の等価比較のみで、網羅的なswitchは無いことを確認済み)。
+  provider: string;
   name: string; // UI表示名
   capabilities: ModelCapabilities;
 }
@@ -57,6 +60,13 @@ export interface ChatRequest {
   messages: ChatMessage[];
   maxOutputTokens?: number;
   temperature?: number;
+  /** [Phase 1継続] stream_runsテーブルへの永続化のため、呼び出し元の文脈をRust側へ伝える。
+   *  会話に属さない一時的な送信(コスト見積り等)ではundefinedのままでよい。 */
+  conversationId?: string;
+  slotId?: string;
+  /** [Phase 1継続 項目3/4] orchestrator.tsが発行するID。Rust側stream_runsのPKと一致させ、
+   *  個別キャンセル(cancel_stream_run)の対象指定に使う。 */
+  requestId?: string;
 }
 
 export interface ChatResponse {
@@ -80,7 +90,8 @@ export type RequestStatus =
   | "cancelled";
 
 export interface AIProvider {
-  readonly id: ProviderId;
+  // [Phase CP-1 MVP] Custom Providerを許容するためProviderIdからstringへ拡張。
+  readonly id: string;
   readonly name: string;
 
   listModels(): Promise<AIModel[]>;

@@ -75,6 +75,27 @@ export async function deleteConversation(conversationId: string): Promise<void> 
   await invoke("delete_conversation", { conversationId });
 }
 
+// --- [Phase 1継続] アプリクラッシュ時の途中応答復元 ---
+
+export interface InterruptedStreamRun {
+  request_id: string;
+  conversation_id: string | null;
+  slot_id: string | null;
+  provider: string;
+  model: string;
+  started_at: string;
+  updated_at: string;
+  reconstructed_content: string;
+}
+
+export async function listInterruptedStreamRuns(): Promise<InterruptedStreamRun[]> {
+  return invoke<InterruptedStreamRun[]>("list_interrupted_stream_runs");
+}
+
+export async function markStreamRunRecovered(requestId: string): Promise<void> {
+  await invoke("mark_stream_run_recovered", { requestId });
+}
+
 function parseIds(value: string): string[] {
   try {
     const parsed = JSON.parse(value);

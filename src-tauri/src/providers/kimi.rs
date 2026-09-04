@@ -1,3 +1,4 @@
+use crate::db;
 use crate::dto::{ChatMessageDto, ChatResponseDto, StreamTokenEvent};
 use crate::pricing;
 use futures_util::StreamExt;
@@ -134,6 +135,8 @@ pub async fn stream(
     let mut output_tokens: Option<u32> = None;
     let mut cache_hit_input_tokens: Option<u32> = None;
     let mut cache_miss_input_tokens: Option<u32> = None;
+    // [Phase 1継続] チャンクの到着順。response_chunksへのsequence列に使う。
+    let mut sequence: i64 = 0;
 
     let mut process_line = |line: &str| {
         let line = line.trim();
@@ -158,6 +161,9 @@ pub async fn stream(
                         token: token.to_string(),
                     },
                 );
+                // [Phase 1継続] best-effortでチャンクを永続化する。
+                let _ = db::append_response_chunk(app, request_id, sequence, token);
+                sequence += 1;
             }
 
             // Kimi can expose usage in the terminal chunk. Some compatibility

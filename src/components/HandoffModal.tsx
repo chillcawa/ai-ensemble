@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { ProviderSlot } from "../types/app";
+import type { AIResponseSlot } from "../types/app";
 import type { BroadcastResult } from "../orchestrator/orchestrator";
 import { useI18n } from "../i18n";
 
@@ -29,10 +29,10 @@ const PRESETS = [
 ] as const;
 
 export function HandoffModal({ sourceSlot, sourceResult, sourceMeta, slots, onClose, onSend }: {
-  sourceSlot: ProviderSlot;
+  sourceSlot: AIResponseSlot;
   sourceResult: BroadcastResult;
   sourceMeta: HandoffSourceMeta;
-  slots: ProviderSlot[];
+  slots: AIResponseSlot[];
   onClose: () => void;
   onSend: (request: HandoffRequest) => void;
 }) {

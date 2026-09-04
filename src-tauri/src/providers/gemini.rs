@@ -1,3 +1,4 @@
+use crate::db;
 use crate::dto::{ChatMessageDto, ChatResponseDto, StreamTokenEvent};
 use futures_util::StreamExt;
 use serde_json::json;
@@ -117,6 +118,8 @@ pub async fn stream(
     let mut buffer = String::new();
     let mut input_tokens: Option<u32> = None;
     let mut output_tokens: Option<u32> = None;
+    // [Phase 1継続] チャンクの到着順。response_chunksへのsequence列に使う。
+    let mut sequence: i64 = 0;
 
     let mut process_line = |line: &str| {
         let line = line.trim();
@@ -141,6 +144,9 @@ pub async fn stream(
                         token: token.to_string(),
                     },
                 );
+                // [Phase 1継続] best-effortでチャンクを永続化する。
+                let _ = db::append_response_chunk(app, request_id, sequence, token);
+                sequence += 1;
             }
 
             if let Some(usage_value) = chunk.get("usage").filter(|value| !value.is_null()) {

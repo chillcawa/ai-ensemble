@@ -10,6 +10,25 @@ export interface ProviderSlot {
   keyDraft: string;
 }
 
+export type AIResponseSlotKind = "built_in" | "custom";
+
+/**
+ * ResultBoard / Handoff UIで使う表示用AIスロット。
+ * Built-in ProviderとCustom Providerを同じ「AIの席」として扱うため、
+ * ProviderId固定ではなくprovider:stringへ正規化する。
+ */
+export interface AIResponseSlot {
+  id: string;
+  provider: string;
+  providerKey?: ProviderId;
+  label: string;
+  enabled: boolean;
+  model: AIModel;
+  keySaved: boolean;
+  kind: AIResponseSlotKind;
+  baseUrl?: string;
+}
+
 export interface UsageTotals {
   requests: number;
   input_tokens: number;

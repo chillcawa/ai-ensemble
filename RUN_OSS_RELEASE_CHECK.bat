@@ -10,7 +10,7 @@ if not "%CHECK_RESULT%"=="0" (
   echo OSS release check FAILED. Copy this window's error message when asking for help.
 ) else (
   echo OSS release check PASSED.
-  echo Send AI-Ensemble-v1.3.4-OSS-VERIFIED-SOURCE.zip back for the final publication audit.
+  echo Send the generated AI-Ensemble-ECHO-v*-OSS-VERIFIED-SOURCE.zip back for the final publication audit.
 )
 echo.
 pause

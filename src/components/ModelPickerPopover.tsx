@@ -41,7 +41,7 @@ export function ModelPickerPopover({ slot, models, recommendedModelId, onSelect,
                   <code>{model.id}</code>
                   <span className="capability-badges">
                     {capabilityBadges(model).map((badge) => (
-                      <em key={`${model.id}-${badge.label}`} className={`capability-badge ${badge.tone}`} title={badge.title}>{badge.label}</em>
+                      <em key={`${model.id}-${badge.label}`} className={`capability-badge ${badge.tone}`} title={badge.title ? t(badge.title) : undefined}>{t(badge.label)}</em>
                     ))}
                   </span>
                   {!available && <small className="model-unavailable-reason">{model.capabilities.unavailableReason ?? t("現在のAdapterでは利用できません")}</small>}

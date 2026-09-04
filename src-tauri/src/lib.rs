@@ -1,3 +1,4 @@
+mod cancellation;
 mod db;
 mod dto;
 mod keychain;
@@ -82,7 +83,31 @@ async fn chat_completion(
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     api_mode: Option<String>,
+    // [Phase CP-1 MVP] Some(url)ならCustom Provider(OpenAI互換)として扱い、
+    // 既存9社のmatch分岐には一切入らない。既存の呼び出し元(built-in providers)は
+    // このパラメータを渡さない(None)ため、既存の挙動は変わらない。
+    base_url: Option<String>,
 ) -> Result<ChatResponseDto, String> {
+    if let Some(base_url) = base_url {
+        // Custom Providerはキー必須にしない(未保存/空文字なら認証ヘッダ無しで送信する)。
+        let key = keychain::get_secret(&provider)?.unwrap_or_default();
+        let started = std::time::Instant::now();
+        let result = providers::custom_openai::chat(&key, &base_url, &model, &messages, max_tokens, temperature).await?;
+        db::record(
+            &app,
+            &provider,
+            &result.model,
+            result.input_tokens,
+            result.output_tokens,
+            result.cache_hit_input_tokens,
+            result.cache_miss_input_tokens,
+            result.cost_usd,
+            result.pricing_basis.as_deref(),
+            Some(started.elapsed().as_millis() as u64),
+        )?;
+        return Ok(result);
+    }
+
     let key = require_key(&provider)?;
     validate_model_for_current_adapter(&provider, &model, api_mode.as_deref())?;
     let started = std::time::Instant::now();
@@ -132,6 +157,7 @@ async fn chat_completion(
 #[allow(clippy::too_many_arguments)]
 async fn stream_chat_completion(
     app: tauri::AppHandle,
+    state: tauri::State<'_, cancellation::StreamCancellationRegistry>,
     request_id: String,
     provider: String,
     model: String,
@@ -139,11 +165,57 @@ async fn stream_chat_completion(
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     api_mode: Option<String>,
+    conversation_id: Option<String>,
+    slot_id: Option<String>,
+    // [Phase CP-1 MVP] Some(url)ならCustom Provider(OpenAI互換)として扱う。
+    // 既存の呼び出し元(built-in providers)はこのパラメータを渡さない(None)ため、
+    // 既存9社の分岐・挙動は一切変わらない。
+    base_url: Option<String>,
 ) -> Result<ChatResponseDto, String> {
-    let key = require_key(&provider)?;
-    validate_model_for_current_adapter(&provider, &model, api_mode.as_deref())?;
+    let key = if base_url.is_some() {
+        // Custom Providerはキー必須にしない(未保存/空文字なら認証ヘッダ無しで送信する)。
+        keychain::get_secret(&provider)?.unwrap_or_default()
+    } else {
+        require_key(&provider)?
+    };
+    if base_url.is_none() {
+        validate_model_for_current_adapter(&provider, &model, api_mode.as_deref())?;
+    }
     let started = std::time::Instant::now();
-    let result = match provider.as_str() {
+
+    // [Phase 1継続] このstreamをstream_runsに記録する。以降、途中のチャンクは
+    // 各providerのstream()実装からrequest_id経由で永続化される。
+    db::start_stream_run(
+        &app,
+        &request_id,
+        conversation_id.as_deref(),
+        slot_id.as_deref(),
+        &provider,
+        &model,
+    )?;
+
+    // [Phase 1継続 項目4] このstreamのキャンセルトークンを登録する。
+    // ユーザーが「このAIだけ停止」を押すと、cancel_stream_run commandが
+    // このtokenをcancel()し、下のtokio::select!が反応してdispatch_futを
+    // dropする。reqwestの進行中の接続もこれに伴って中断される。
+    let cancel_token = state.register(&request_id);
+
+    let dispatch_fut = async {
+        if let Some(base_url) = base_url.as_deref() {
+            // [Phase CP-1 MVP] Custom Provider。既存9社のmatchには入らない。
+            return providers::custom_openai::stream(
+                &key,
+                base_url,
+                &model,
+                &messages,
+                max_tokens,
+                temperature,
+                &app,
+                &request_id,
+            )
+            .await;
+        }
+        match provider.as_str() {
         "openai" => {
             if api_mode.as_deref() == Some("responses") {
                 providers::openai::responses_stream(
@@ -266,7 +338,38 @@ async fn stream_chat_completion(
             .await
         }
         other => Err(format!("unknown provider '{other}'")),
-    }?;
+        }
+    };
+
+    // [Phase 1継続 項目4] dispatch_futとキャンセル信号を競合させる。
+    // ユーザーが停止を押すと cancel_token.cancelled() が先に完了し、
+    // dispatch_futはtokio::select!によってdropされる(reqwestの進行中の
+    // 接続もこれに伴って中断される)。
+    let dispatch_result = tokio::select! {
+        result = dispatch_fut => result,
+        _ = cancel_token.cancelled() => Err("cancelled_by_user".to_string()),
+    };
+    // このstreamは終了した(成功/失敗/キャンセルいずれか)ので、
+    // registryに登録したtokenを必ず解放する。
+    state.unregister(&request_id);
+
+    // [Phase 1継続] 成功/失敗/キャンセルいずれの場合もstream_runsの状態を確定させる。
+    // ここで`?`による早期returnをせず、まずstream_runsを更新してから
+    // 呼び出し元へエラーを伝播する。
+    let result = match dispatch_result {
+        Ok(result) => {
+            db::complete_stream_run(&app, &request_id, &result.content)?;
+            result
+        }
+        Err(err) if err == "cancelled_by_user" => {
+            db::mark_stream_run_cancelled(&app, &request_id)?;
+            return Err(err);
+        }
+        Err(err) => {
+            db::fail_stream_run(&app, &request_id, &err)?;
+            return Err(err);
+        }
+    };
 
     db::record(
         &app,
@@ -1005,6 +1108,27 @@ async fn list_provider_models(provider: String) -> Result<Vec<AvailableModelInfo
 }
 
 #[tauri::command]
+fn cancel_stream_run(
+    state: tauri::State<'_, cancellation::StreamCancellationRegistry>,
+    request_id: String,
+) -> Result<(), String> {
+    state.cancel(&request_id);
+    Ok(())
+}
+
+#[tauri::command]
+fn list_interrupted_stream_runs(
+    app: tauri::AppHandle,
+) -> Result<Vec<db::InterruptedStreamRun>, String> {
+    db::list_interrupted_stream_runs(&app)
+}
+
+#[tauri::command]
+fn mark_stream_run_recovered(app: tauri::AppHandle, request_id: String) -> Result<(), String> {
+    db::mark_stream_run_recovered(&app, &request_id)
+}
+
+#[tauri::command]
 fn create_conversation(
     app: tauri::AppHandle,
     id: String,
@@ -1400,6 +1524,7 @@ fn validate_official_provider_url(input: &str) -> Result<url::Url, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(cancellation::StreamCancellationRegistry::default())
         .setup(|app| {
             db::init(app.handle())
                 .map_err(|e| -> Box<dyn std::error::Error> { std::io::Error::other(e).into() })?;
@@ -1421,6 +1546,9 @@ pub fn run() {
             create_conversation,
             list_conversations,
             get_conversation_messages,
+            list_interrupted_stream_runs,
+            mark_stream_run_recovered,
+            cancel_stream_run,
             list_comparison_markers,
             add_comparison_marker,
             delete_comparison_marker,

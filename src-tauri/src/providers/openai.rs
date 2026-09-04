@@ -1,3 +1,4 @@
+use crate::db;
 use crate::dto::{ChatMessageDto, ChatResponseDto, StreamTokenEvent};
 use crate::pricing;
 use futures_util::StreamExt;
@@ -137,6 +138,8 @@ pub async fn stream(
     let mut buffer = String::new();
     let mut input_tokens: Option<u32> = None;
     let mut output_tokens: Option<u32> = None;
+    // [Phase 1継続] チャンクの到着順。response_chunksへのsequence列に使う。
+    let mut sequence: i64 = 0;
 
     // SSEは最後のdata行に改行が付かない場合がある。
     // その場合、従来の「\nが来るまで処理」だけでは最終usageを取りこぼす。
@@ -162,6 +165,10 @@ pub async fn stream(
                         token: token.to_string(),
                     },
                 );
+                // [Phase 1継続] アプリクラッシュ時の復元用に、届いたチャンクを
+                // 即座に永続化する。失敗してもstreamは継続する(best-effort)。
+                let _ = db::append_response_chunk(app, request_id, sequence, token);
+                sequence += 1;
             }
             if let Some(usage) = json_chunk.get("usage") {
                 input_tokens = usage["prompt_tokens"].as_u64().map(|v| v as u32);
@@ -363,6 +370,8 @@ pub async fn responses_stream(
     let mut output_tokens: Option<u32> = None;
     let mut response_model = model.to_string();
     let mut stream_error: Option<String> = None;
+    // [Phase 1継続] チャンクの到着順。response_chunksへのsequence列に使う。
+    let mut sequence: i64 = 0;
 
     let mut process_line = |line: &str| {
         let line = line.trim();
@@ -387,6 +396,9 @@ pub async fn responses_stream(
                             token: delta.to_string(),
                         },
                     );
+                    // [Phase 1継続] best-effortでチャンクを永続化する。
+                    let _ = db::append_response_chunk(app, request_id, sequence, delta);
+                    sequence += 1;
                 }
             }
             Some("response.completed") | Some("response.done") => {
